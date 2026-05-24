@@ -83,6 +83,7 @@ export interface Subsample {
 export interface SamplingPoint {
   id: string;
   plotId: string;
+  monthYear?: string; // Ano/Mês da amostragem (ex: "05/2026" ou "Mai/2026")
   pointNumber: number;
   lat: number;
   lng: number;
@@ -107,12 +108,22 @@ export interface SamplingPoint {
   };
 }
 
+export interface PlotPeriod {
+  id: string;
+  plotId: string;
+  monthYear: string; // Mês/Ano do projeto, ex: "05/2026", "11/2025"
+  cropType: string;  // Cultura comercial recomendada/vigente
+  notes?: string;
+  creationDate: string;
+}
+
 export interface Project {
   id: string;
   name: string;
   clientId: string;
   farmId: string;
   plotId: string;
+  monthYear?: string; // Vinculado a mês/ano
   creationDate: string;
   status: 'planejado' | 'coletando' | 'concluido';
   type: 'grade' | 'zona';

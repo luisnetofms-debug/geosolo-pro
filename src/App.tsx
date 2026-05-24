@@ -9,7 +9,7 @@
  */
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { Client, Farm, Plot, SamplingPoint, Project } from './types';
+import { Client, Farm, Plot, SamplingPoint, Project, PlotPeriod } from './types';
 import { 
   INITIAL_CLIENTS, INITIAL_FARMS, INITIAL_PLOTS, 
   INITIAL_SAMPLING_POINTS, INITIAL_PROJECTS 
@@ -22,11 +22,11 @@ import FertilityAndMaps from './components/FertilityAndMaps';
 import { downloadGISZip } from './utils/fileExporter';
 import { 
   Sprout, Database, Layers, CheckSquare, Download, 
-  Briefcase, Landmark, Compass, HelpCircle, Clock, Check, CloudLightning
+  Briefcase, Landmark, Compass, HelpCircle, Clock, Check, CloudLightning, Calendar
 } from 'lucide-react';
 
 import { 
-  collection, onSnapshot, doc, setDoc, writeBatch, getDocs, getDocFromServer 
+  collection, onSnapshot, doc, setDoc, writeBatch, getDocs, getDocFromServer, deleteDoc 
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from './firebase';
 import { calculatePolygonArea } from './utils/kriging';
@@ -58,11 +58,13 @@ export default function App() {
   const [clients, setClients] = useState<Client[]>(INITIAL_CLIENTS);
   const [farms, setFarms] = useState<Farm[]>(INITIAL_FARMS);
   const [plots, setPlots] = useState<Plot[]>(INITIAL_PLOTS);
+  const [plotPeriods, setPlotPeriods] = useState<PlotPeriod[]>([]);
   const [samplingPoints, setSamplingPoints] = useState<SamplingPoint[]>(INITIAL_SAMPLING_POINTS);
   const [projects, setProjects] = useState<Project[]>([]);
 
   // Active Workspace
   const [activePlotId, setActivePlotId] = useState<string>('plot-1');
+  const [activeMonthYear, setActiveMonthYear] = useState<string>('05/2026');
   const [offlineMode, setOfflineMode] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<'clients' | 'field_station' | 'lab_results' | 'ai_panel' | 'fertility_maps'>('clients');
   const [globalDesiredV2, setGlobalDesiredV2] = useState<number>(70);
@@ -113,6 +115,29 @@ export default function App() {
           });
           INITIAL_PROJECTS.forEach(proj => {
             batch.set(doc(db, 'projects', proj.id), removeUndefined(proj));
+          });
+
+          // Seed default plot periods (months/years) for the initial plots
+          const defaultPeriods: PlotPeriod[] = [
+            {
+              id: 'period-1',
+              plotId: 'plot-1',
+              monthYear: '05/2026',
+              cropType: 'Soja',
+              notes: 'Amostragem Principal de Outono',
+              creationDate: '2026-05-18T18:00:00Z'
+            },
+            {
+              id: 'period-2',
+              plotId: 'plot-2',
+              monthYear: '05/2026',
+              cropType: 'Milho',
+              notes: 'Safrinha e cobertura',
+              creationDate: '2026-05-18T18:00:00Z'
+            }
+          ];
+          defaultPeriods.forEach(p => {
+            batch.set(doc(db, 'plotPeriods', p.id), removeUndefined(p));
           });
 
           await batch.commit();
@@ -194,12 +219,23 @@ export default function App() {
       handleFirestoreError(error, OperationType.LIST, 'projects');
     });
 
+    const unsubPlotPeriods = onSnapshot(collection(db, 'plotPeriods'), (snapshot) => {
+      const list: PlotPeriod[] = [];
+      snapshot.forEach(doc => {
+        list.push(doc.data() as PlotPeriod);
+      });
+      setPlotPeriods(list);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'plotPeriods');
+    });
+
     return () => {
       unsubClients();
       unsubFarms();
       unsubPlots();
       unsubSamplingPoints();
       unsubProjects();
+      unsubPlotPeriods();
     };
   }, []);
 
@@ -227,8 +263,8 @@ export default function App() {
   }, [activePlot]);
 
   const rawActivePoints = useMemo(() => {
-    return samplingPoints.filter((p) => p.plotId === activePlotId);
-  }, [samplingPoints, activePlotId]);
+    return samplingPoints.filter((p) => p.plotId === activePlotId && (p.monthYear === activeMonthYear || (!p.monthYear && activeMonthYear === '05/2026')));
+  }, [samplingPoints, activePlotId, activeMonthYear]);
 
   const activePoints = useMemo(() => {
     return rawActivePoints.map(p => {
@@ -343,23 +379,189 @@ export default function App() {
     };
 
     setActivePlotId(newPlot.id);
+    setActiveMonthYear('05/2026');
+
+    const initialPeriod: PlotPeriod = {
+      id: `period-${Date.now()}`,
+      plotId: newPlot.id,
+      monthYear: '05/2026',
+      cropType: crop,
+      notes: 'Período inicial do talhão',
+      creationDate: new Date().toISOString()
+    };
 
     const initialPoints: SamplingPoint[] = [
-      { id: `pt-n1-${Date.now()}`, plotId: newPlot.id, pointNumber: 1, lat: baseLat + 0.002, lng: baseLng - 0.002, isCollected: false },
-      { id: `pt-n2-${Date.now()}`, plotId: newPlot.id, pointNumber: 2, lat: baseLat + 0.002, lng: baseLng + 0.002, isCollected: false },
-      { id: `pt-n3-${Date.now()}`, plotId: newPlot.id, pointNumber: 3, lat: baseLat - 0.002, lng: baseLng + 0.002, isCollected: false },
-      { id: `pt-n4-${Date.now()}`, plotId: newPlot.id, pointNumber: 4, lat: baseLat - 0.002, lng: baseLng - 0.002, isCollected: false }
+      { id: `pt-n1-${Date.now()}`, plotId: newPlot.id, monthYear: '05/2026', pointNumber: 1, lat: baseLat + 0.002, lng: baseLng - 0.002, isCollected: false },
+      { id: `pt-n2-${Date.now()}`, plotId: newPlot.id, monthYear: '05/2026', pointNumber: 2, lat: baseLat + 0.002, lng: baseLng + 0.002, isCollected: false },
+      { id: `pt-n3-${Date.now()}`, plotId: newPlot.id, monthYear: '05/2026', pointNumber: 3, lat: baseLat - 0.002, lng: baseLng + 0.002, isCollected: false },
+      { id: `pt-n4-${Date.now()}`, plotId: newPlot.id, monthYear: '05/2026', pointNumber: 4, lat: baseLat - 0.002, lng: baseLng - 0.002, isCollected: false }
     ];
 
     try {
       const batch = writeBatch(db);
       batch.set(doc(db, 'plots', newPlot.id), removeUndefined(newPlot));
+      batch.set(doc(db, 'plotPeriods', initialPeriod.id), removeUndefined(initialPeriod));
       initialPoints.forEach((pt) => {
         batch.set(doc(db, 'samplingPoints', pt.id), removeUndefined(pt));
       });
       await batch.commit();
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, `plots/${newPlot.id}`);
+    }
+  };
+
+  const handleEditClient = async (id: string, name: string, docNum: string, phone: string, email: string) => {
+    try {
+      const ref = doc(db, 'clients', id);
+      await setDoc(ref, removeUndefined({ id, name, document: docNum, phone, email }), { merge: true });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, `clients/${id}`);
+    }
+  };
+
+  const handleDeleteClient = async (id: string) => {
+    try {
+      await deleteDoc(doc(db, 'clients', id));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `clients/${id}`);
+    }
+  };
+
+  const handleEditFarm = async (id: string, name: string, city: string, state: string, area: number) => {
+    try {
+      const farmObj = farms.find(f => f.id === id);
+      if (!farmObj) return;
+      const ref = doc(db, 'farms', id);
+      await setDoc(ref, removeUndefined({ ...farmObj, name, city, state, areaHectares: area }), { merge: true });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, `farms/${id}`);
+    }
+  };
+
+  const handleDeleteFarm = async (id: string) => {
+    try {
+      await deleteDoc(doc(db, 'farms', id));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `farms/${id}`);
+    }
+  };
+
+  const handleEditPlot = async (id: string, name: string, area: number, crop: string) => {
+    try {
+      const plotObj = plots.find(p => p.id === id);
+      if (!plotObj) return;
+      const ref = doc(db, 'plots', id);
+      await setDoc(ref, removeUndefined({ ...plotObj, name, areaHectares: area, cropType: crop }), { merge: true });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, `plots/${id}`);
+    }
+  };
+
+  const handleDeletePlot = async (id: string) => {
+    try {
+      await deleteDoc(doc(db, 'plots', id));
+      const plotPoints = samplingPoints.filter(p => p.plotId === id);
+      if (plotPoints.length > 0) {
+        const batch = writeBatch(db);
+        plotPoints.forEach((p) => {
+          batch.delete(doc(db, 'samplingPoints', p.id));
+        });
+        await batch.commit();
+      }
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `plots/${id}`);
+    }
+  };
+
+  const handleAddPlotPeriod = async (plotId: string, monthYear: string, cropType: string, notes?: string) => {
+    const newPeriod: PlotPeriod = {
+      id: `period-${Date.now()}`,
+      plotId,
+      monthYear,
+      cropType,
+      notes: notes || '',
+      creationDate: new Date().toISOString()
+    };
+
+    try {
+      const batch = writeBatch(db);
+      batch.set(doc(db, 'plotPeriods', newPeriod.id), removeUndefined(newPeriod));
+
+      // Auto-generate 4 initial points inside the plot boundary for this specific month/year
+      const plotObj = plots.find(p => p.id === plotId);
+      if (plotObj && plotObj.boundaryPoints && plotObj.boundaryPoints.length > 0) {
+        const baseLat = plotObj.boundaryPoints[0].lat;
+        const baseLng = plotObj.boundaryPoints[0].lng;
+        const initialPoints: SamplingPoint[] = [
+          { id: `pt-p1-${Date.now()}`, plotId, monthYear, pointNumber: 1, lat: baseLat + 0.002, lng: baseLng - 0.002, isCollected: false },
+          { id: `pt-p2-${Date.now()}`, plotId, monthYear, pointNumber: 2, lat: baseLat + 0.002, lng: baseLng + 0.002, isCollected: false },
+          { id: `pt-p3-${Date.now() + 1}`, plotId, monthYear, pointNumber: 3, lat: baseLat - 0.002, lng: baseLng + 0.002, isCollected: false },
+          { id: `pt-p4-${Date.now() + 2}`, plotId, monthYear, pointNumber: 4, lat: baseLat - 0.002, lng: baseLng - 0.002, isCollected: false }
+        ];
+        initialPoints.forEach((pt) => {
+          batch.set(doc(db, 'samplingPoints', pt.id), removeUndefined(pt));
+        });
+      }
+      await batch.commit();
+      setActiveMonthYear(monthYear);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, `plotPeriods/${newPeriod.id}`);
+    }
+  };
+
+  const handleEditPlotPeriod = async (id: string, monthYear: string, cropType: string, notes?: string) => {
+    try {
+      const p = plotPeriods.find(item => item.id === id);
+      if (!p) return;
+      
+      const oldMonthYear = p.monthYear;
+      const ref = doc(db, 'plotPeriods', id);
+      await setDoc(ref, removeUndefined({ ...p, monthYear, cropType, notes }), { merge: true });
+      
+      // Update monthYear inside all sampling points for this plot period
+      if (oldMonthYear !== monthYear) {
+        const periodPoints = samplingPoints.filter(pt => pt.plotId === p.plotId && pt.monthYear === oldMonthYear);
+        if (periodPoints.length > 0) {
+          const batch = writeBatch(db);
+          periodPoints.forEach((pt) => {
+            batch.set(doc(db, 'samplingPoints', pt.id), removeUndefined({ ...pt, monthYear }), { merge: true });
+          });
+          await batch.commit();
+        }
+      }
+
+      if (activeMonthYear === oldMonthYear) {
+        setActiveMonthYear(monthYear);
+      }
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, `plotPeriods/${id}`);
+    }
+  };
+
+  const handleDeletePlotPeriod = async (id: string) => {
+    try {
+      const p = plotPeriods.find(item => item.id === id);
+      if (!p) return;
+      await deleteDoc(doc(db, 'plotPeriods', id));
+
+      const periodPoints = samplingPoints.filter(pt => pt.plotId === p.plotId && pt.monthYear === p.monthYear);
+      if (periodPoints.length > 0) {
+        const batch = writeBatch(db);
+        periodPoints.forEach((pt) => {
+          batch.delete(doc(db, 'samplingPoints', pt.id));
+        });
+        await batch.commit();
+      }
+
+      // Reset active period
+      const remaining = plotPeriods.filter(item => item.plotId === p.plotId && item.id !== id);
+      if (remaining.length > 0) {
+        setActiveMonthYear(remaining[0].monthYear);
+      } else {
+        setActiveMonthYear('05/2026');
+      }
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `plotPeriods/${id}`);
     }
   };
 
@@ -614,6 +816,11 @@ export default function App() {
                   Cultura: <strong className="text-slate-200 font-semibold">{activePlot?.cropType}</strong>
                 </span>
                 <span>•</span>
+                <span className="flex items-center gap-1.5 text-emerald-400">
+                  <Calendar className="w-3.5 h-3.5 text-emerald-450 animate-pulse shrink-0" />
+                  Período: <strong className="text-emerald-350 font-extrabold">{activeMonthYear}</strong>
+                </span>
+                <span>•</span>
                 <span className="flex items-center gap-1.5">
                   <Compass className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
                   Furos Planejados: <strong className="text-slate-200 font-semibold">{activePoints.length}</strong>
@@ -654,10 +861,30 @@ export default function App() {
                 plots={plots}
                 projects={projects}
                 activePlotId={activePlotId}
-                onSelectPlot={(id) => setActivePlotId(id)}
+                plotPeriods={plotPeriods}
+                activeMonthYear={activeMonthYear}
+                onSelectPlot={(id) => {
+                  setActivePlotId(id);
+                  const pPeriod = plotPeriods.find(p => p.plotId === id);
+                  if (pPeriod) {
+                    setActiveMonthYear(pPeriod.monthYear);
+                  } else {
+                    setActiveMonthYear('05/2026');
+                  }
+                }}
+                onSelectMonthYear={setActiveMonthYear}
+                onAddPlotPeriod={handleAddPlotPeriod}
+                onEditPlotPeriod={handleEditPlotPeriod}
+                onDeletePlotPeriod={handleDeletePlotPeriod}
                 onAddClient={handleAddClient}
                 onAddFarm={handleAddFarm}
                 onAddPlot={handleAddPlot}
+                onEditClient={handleEditClient}
+                onDeleteClient={handleDeleteClient}
+                onEditFarm={handleEditFarm}
+                onDeleteFarm={handleDeleteFarm}
+                onEditPlot={handleEditPlot}
+                onDeletePlot={handleDeletePlot}
               />
             </section>
           )}

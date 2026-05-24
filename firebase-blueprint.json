@@ -155,6 +155,32 @@
         }
       },
       "required": ["id", "name", "plotId"]
+    },
+    "PlotPeriod": {
+      "title": "PlotPeriod",
+      "description": "Períodos de campanhas de análise de solo e projetos de cada talhão por ano/mês para organização das amostragens",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "plotId": {
+          "type": "string"
+        },
+        "monthYear": {
+          "type": "string"
+        },
+        "cropType": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "creationDate": {
+          "type": "string"
+        }
+      },
+      "required": ["id", "plotId", "monthYear", "cropType"]
     }
   },
   "firestore": {
@@ -177,6 +203,10 @@
     "projects": {
       "schema": "Project",
       "description": "Root collection detailing progress on soil samplings"
+    },
+    "plotPeriods": {
+      "schema": "PlotPeriod",
+      "description": "Root collection representing organized month/year sample campaigns"
     }
   }
 }

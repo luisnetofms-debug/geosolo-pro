@@ -1192,18 +1192,149 @@ RESUMO DA RECOMENDAÇÃO DE TAXA VARIÁVEL:
                         const colName = selectedProductStats.isKg ? 'DOSE_KGHA' : 'DOSE_THA';
                         let csvContent = `Ponto;Latitude;Longitude;${colName};UNIDADE\n`;
                         
+                        interface PointRecord {
+                          pointNumber: number;
+                          lat: number;
+                          lng: number;
+                          val: number;
+                        }
+                        const listForShp: PointRecord[] = [];
+
                         pointsWithResults.forEach((p) => {
                           const val = getProductDose(p, plot.cropType, selectedProduct, v2Desired, prnt);
                           csvContent += `${p.pointNumber};${p.lat.toFixed(7)};${p.lng.toFixed(7)};${val};${selectedProductStats.unit.replace('/', '_')}\n`;
+                          listForShp.push({ pointNumber: p.pointNumber, lat: p.lat, lng: p.lng, val });
                         });
+
+                        // Calculate spatial limits for Shapefile Header
+                        let minLng = Infinity, maxLng = -Infinity;
+                        let minLat = Infinity, maxLat = -Infinity;
+                        listForShp.forEach((pt) => {
+                          if (pt.lng < minLng) minLng = pt.lng;
+                          if (pt.lng > maxLng) maxLng = pt.lng;
+                          if (pt.lat < minLat) minLat = pt.lat;
+                          if (pt.lat > maxLat) maxLat = pt.lat;
+                        });
+                        if (minLng === Infinity) {
+                          minLng = maxLng = minLat = maxLat = 0;
+                        }
+
+                        const N = listForShp.length;
+
+                        // Create SHP Buffer (Shape Type 1 = Point)
+                        const shpByteLength = 100 + N * 28;
+                        const shpBuffer = new ArrayBuffer(shpByteLength);
+                        const shpView = new DataView(shpBuffer);
+
+                        shpView.setInt32(0, 9994, false); // File Code (big endian)
+                        shpView.setInt32(24, shpByteLength / 2, false); // File Length in 16-bit words (big endian)
+                        shpView.setInt32(28, 1000, true); // Version (little endian)
+                        shpView.setInt32(32, 1, true); // Shape Type: Point (little endian)
+                        
+                        shpView.setFloat64(36, minLng, true);
+                        shpView.setFloat64(44, minLat, true);
+                        shpView.setFloat64(52, maxLng, true);
+                        shpView.setFloat64(60, maxLat, true);
+
+                        let shpOffset = 100;
+                        listForShp.forEach((pt, idx) => {
+                          shpView.setInt32(shpOffset, idx + 1, false); // Record Number
+                          shpView.setInt32(shpOffset + 4, 10, false); // Content length in words (20 bytes = 10 words)
+                          shpView.setInt32(shpOffset + 8, 1, true); // Record Type: Point = 1
+                          shpView.setFloat64(shpOffset + 12, pt.lng, true); // X (Longitude)
+                          shpView.setFloat64(shpOffset + 20, pt.lat, true); // Y (Latitude)
+                          shpOffset += 28;
+                        });
+
+                        // Create SHX Buffer
+                        const shxByteLength = 100 + N * 8;
+                        const shxBuffer = new ArrayBuffer(shxByteLength);
+                        const shxView = new DataView(shxBuffer);
+
+                        shxView.setInt32(0, 9994, false); // File Code
+                        shxView.setInt32(24, shxByteLength / 2, false); // File Length in 16-bit words
+                        shxView.setInt32(28, 1000, true); // Version
+                        shxView.setInt32(32, 1, true); // Shape Type: Point
+
+                        shxView.setFloat64(36, minLng, true);
+                        shxView.setFloat64(44, minLat, true);
+                        shxView.setFloat64(52, maxLng, true);
+                        shxView.setFloat64(60, maxLat, true);
+
+                        let shxOffset = 100;
+                        listForShp.forEach((pt, idx) => {
+                          const wordOffset = (100 + idx * 28) / 2;
+                          shxView.setInt32(shxOffset, wordOffset, false); // Record Offset in words
+                          shxView.setInt32(shxOffset + 4, 10, false); // Record Content Length (10 words)
+                          shxOffset += 8;
+                        });
+
+                        // Create DBF Buffer (dBASE III format)
+                        const dbfHeaderLength = 32 + 32 * 2 + 1; // 97 bytes
+                        const dbfRecordLength = 1 + 6 + 12; // 19 bytes (delete flag + PONTO 6 chars + DOSE 12 chars)
+                        const dbfByteLength = dbfHeaderLength + dbfRecordLength * N + 1; // header + records + EOF byte
+                        const dbfBuffer = new ArrayBuffer(dbfByteLength);
+                        const dbfView = new DataView(dbfBuffer);
+                        const dbfBytes = new Uint8Array(dbfBuffer);
+
+                        // Write DBF main header
+                        dbfView.setUint8(0, 0x03); // dBASE III standard
+                        const date = new Date();
+                        dbfView.setUint8(1, date.getFullYear() - 1900);
+                        dbfView.setUint8(2, date.getMonth() + 1);
+                        dbfView.setUint8(3, date.getDate());
+                        dbfView.setUint32(4, N, true); // Number of records
+                        dbfView.setUint16(8, dbfHeaderLength, true); // Header bytes structure length
+                        dbfView.setUint16(10, dbfRecordLength, true); // Record bytes size
+
+                        // Field 1: "PONTO" (Numeric, length 6, decimals 0)
+                        const f1Name = "PONTO";
+                        for (let i = 0; i < 11; i++) {
+                          dbfBytes[32 + i] = i < f1Name.length ? f1Name.charCodeAt(i) : 0;
+                        }
+                        dbfBytes[32 + 11] = 0x4E; // Type: 'N' (Numeric)
+                        dbfBytes[32 + 16] = 6; // Field length
+                        dbfBytes[32 + 17] = 0; // Fields decimal digits count
+
+                        // Field 2: colName (e.g. "DOSE_KGHA", Numeric, length 12, decimals 2)
+                        const f2Name = colName.substring(0, 11).toUpperCase();
+                        for (let i = 0; i < 11; i++) {
+                          dbfBytes[64 + i] = i < f2Name.length ? f2Name.charCodeAt(i) : 0;
+                        }
+                        dbfBytes[64 + 11] = 0x4E; // Type: 'N' (Numeric)
+                        dbfBytes[64 + 16] = 12; // Field length
+                        dbfBytes[64 + 17] = 2; // Fields decimal digits count (2 decimals for rate precision)
+
+                        // Field descriptor terminator
+                        dbfBytes[96] = 0x0D;
+
+                        // Paste record rows
+                        let dbfOffset = 97;
+                        listForShp.forEach((pt) => {
+                          dbfBytes[dbfOffset] = 0x20; // Deletion flag (active)
+
+                          // PONTO column numeric string ASCII padded left
+                          const pStr = pt.pointNumber.toString().padStart(6, ' ');
+                          for (let j = 0; j < 6; j++) {
+                            dbfBytes[dbfOffset + 1 + j] = pStr.charCodeAt(j);
+                          }
+
+                          // DOSE column numeric string ASCII padded left
+                          const dStr = pt.val.toFixed(2).padStart(12, ' ');
+                          for (let j = 0; j < 12; j++) {
+                            dbfBytes[dbfOffset + 1 + 6 + j] = dStr.charCodeAt(j);
+                          }
+
+                          dbfOffset += 19;
+                        });
+                        dbfBytes[dbfOffset] = 0x1A; // EOF marker
 
                         zip.file(`${folderName}/LEIA-ME_${selectedProduct.toUpperCase()}_STARA_TOPPER5500.txt`, manualTxt);
                         zip.file(`${folderName}/${selectedProduct}_prescricao_topper.csv`, csvContent);
                         zip.file(`${folderName}/${selectedProduct}_prescricao_topper.prj`, prjContent);
-                        
-                        zip.file(`${folderName}/${selectedProduct}_prescricao_topper.shp`, "SHP-STARA-GEOMETRY-DAT-STUB");
-                        zip.file(`${folderName}/${selectedProduct}_prescricao_topper.shx`, "SHX-STARA-INDEX-DAT-STUB");
-                        zip.file(`${folderName}/${selectedProduct}_prescricao_topper.dbf`, `DBF-STARA-ATTRIBUTES-${colName}-RATE-${selectedProduct}`);
+                        zip.file(`${folderName}/${selectedProduct}_prescricao_topper.shp`, new Uint8Array(shpBuffer));
+                        zip.file(`${folderName}/${selectedProduct}_prescricao_topper.shx`, new Uint8Array(shxBuffer));
+                        zip.file(`${folderName}/${selectedProduct}_prescricao_topper.dbf`, dbfBytes);
 
                         const blob = await zip.generateAsync({ type: 'blob' });
                         const link = document.createElement('a');

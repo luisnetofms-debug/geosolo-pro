@@ -36,5 +36,10 @@ service cloud.firestore {
     match /projects/{projectId} {
       allow read, write: if true;
     }
+
+    // Plot Periods collection rules
+    match /plotPeriods/{periodId} {
+      allow read, write: if true;
+    }
   }
 }
