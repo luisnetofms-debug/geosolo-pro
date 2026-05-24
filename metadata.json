@@ -1,0 +1,10 @@
+{
+  "name": "GeoSolo",
+  "description": "Plataforma de georreferenciamento para amostragem de solo em grade e zonas de manejo, com suporte a mapas offline, exportação para GPS (GPX, KML, KML-Zip) e interpolação por Krigagem ordinária com recomendações integradas por Inteligência Artificial.",
+  "requestFramePermissions": [
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

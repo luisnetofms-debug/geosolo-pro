@@ -1,0 +1,182 @@
+{
+  "entities": {
+    "Client": {
+      "title": "Client",
+      "description": "Portfólio de Clientes Agrícolas",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique Client ID"
+        },
+        "name": {
+          "type": "string",
+          "description": "Client full name"
+        },
+        "document": {
+          "type": "string",
+          "description": "CPF or CNPJ identifier"
+        },
+        "phone": {
+          "type": "string",
+          "description": "Contact telephone number"
+        },
+        "email": {
+          "type": "string",
+          "description": "Contact email address"
+        }
+      },
+      "required": ["id", "name"]
+    },
+    "Farm": {
+      "title": "Farm",
+      "description": "Propriedades rurais vinculadas aos clientes",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique Farm ID"
+        },
+        "clientId": {
+          "type": "string",
+          "description": "Owner Client ID link"
+        },
+        "name": {
+          "type": "string",
+          "description": "Farm name"
+        },
+        "city": {
+          "type": "string",
+          "description": "City of property"
+        },
+        "state": {
+          "type": "string",
+          "description": "State code e.g. SP"
+        },
+        "areaHectares": {
+          "type": "number",
+          "description": "Total area in hectares"
+        }
+      },
+      "required": ["id", "clientId", "name"]
+    },
+    "Plot": {
+      "title": "Plot",
+      "description": "Talhões de cultivo dentro de uma fazenda",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "farmId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "areaHectares": {
+          "type": "number"
+        },
+        "cropType": {
+          "type": "string"
+        }
+      },
+      "required": ["id", "farmId", "name"]
+    },
+    "SamplingPoint": {
+      "title": "SamplingPoint",
+      "description": "Furos e pontos de amostragem georreferenciados para coleta de terra",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "plotId": {
+          "type": "string"
+        },
+        "pointNumber": {
+          "type": "number"
+        },
+        "lat": {
+          "type": "number"
+        },
+        "lng": {
+          "type": "number"
+        },
+        "isCollected": {
+          "type": "boolean"
+        },
+        "collectionDate": {
+          "type": "string"
+        },
+        "collectedBy": {
+          "type": "string"
+        },
+        "subsamples": {
+          "type": "array",
+          "description": "Subamostras correspondentes a profundidades selecionadas"
+        }
+      },
+      "required": ["id", "plotId", "pointNumber", "lat", "lng", "isCollected"]
+    },
+    "Project": {
+      "title": "Project",
+      "description": "Projetos de amostragem de grade em andamento",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "clientId": {
+          "type": "string"
+        },
+        "farmId": {
+          "type": "string"
+        },
+        "plotId": {
+          "type": "string"
+        },
+        "creationDate": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["planejado", "coletando", "concluido"]
+        },
+        "type": {
+          "type": "string",
+          "enum": ["grade", "zona"]
+        },
+        "gridSizeMeters": {
+          "type": "number"
+        }
+      },
+      "required": ["id", "name", "plotId"]
+    }
+  },
+  "firestore": {
+    "clients": {
+      "schema": "Client",
+      "description": "Root collection for all registered agricultural clients"
+    },
+    "farms": {
+      "schema": "Farm",
+      "description": "Root collection for all properties"
+    },
+    "plots": {
+      "schema": "Plot",
+      "description": "Root collection for cultivated land limits"
+    },
+    "samplingPoints": {
+      "schema": "SamplingPoint",
+      "description": "Root collection representing coordinate grids and laboratory test details"
+    },
+    "projects": {
+      "schema": "Project",
+      "description": "Root collection detailing progress on soil samplings"
+    }
+  }
+}
