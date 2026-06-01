@@ -115,6 +115,10 @@ export interface PlotPeriod {
   cropType: string;  // Cultura comercial recomendada/vigente
   notes?: string;
   creationDate: string;
+  desiredV2?: number;      // V2 Alvo/Desejado % para recomendação
+  prnt?: number;           // PRNT do Calcário % para recomendação
+  minDose?: number;        // Dose Mínima de calcário t/ha
+  userCellSizeM?: number;  // Tamanho do grid em metros
 }
 
 export interface Project {

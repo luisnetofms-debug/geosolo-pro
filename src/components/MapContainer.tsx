@@ -18,6 +18,7 @@ interface MapContainerProps {
   setActiveSoilLayer: (layer: string) => void;
   soilLayers: string[];
   setSoilLayers: (layers: string[]) => void;
+  activeMonthYear?: string;
 }
 
 export default function MapContainer({
@@ -31,6 +32,7 @@ export default function MapContainer({
   setActiveSoilLayer,
   soilLayers,
   setSoilLayers,
+  activeMonthYear,
 }: MapContainerProps) {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
@@ -127,6 +129,7 @@ export default function MapContainer({
                 newSamplingPoints.push({
                   id: `pt-kml-${Date.now()}-${idx}-${Math.random().toString(36).substr(2, 4)}`,
                   plotId: plot.id,
+                  monthYear: activeMonthYear,
                   pointNumber: nr,
                   lat: pt.lat,
                   lng: pt.lng,
@@ -167,6 +170,7 @@ export default function MapContainer({
                       newSamplingPoints.push({
                         id: `pt-kml-pm-${Date.now()}-${j}`,
                         plotId: plot.id,
+                        monthYear: activeMonthYear,
                         pointNumber: newSamplingPoints.length + 1,
                         lat,
                         lng,
@@ -306,6 +310,7 @@ export default function MapContainer({
         const newPoint: SamplingPoint = {
           id: `pt-${Date.now()}`,
           plotId: plot.id,
+          monthYear: activeMonthYear,
           pointNumber: nextNum,
           lat: e.latlng.lat,
           lng: e.latlng.lng,
@@ -780,6 +785,7 @@ export default function MapContainer({
           generatedPoints.push({
             id: `pt-gen-${count}-${Date.now()}`,
             plotId: plot.id,
+            monthYear: activeMonthYear,
             pointNumber: count,
             lat: realCoords.lat,
             lng: realCoords.lng,
@@ -798,6 +804,7 @@ export default function MapContainer({
         generatedPoints.push({
           id: `pt-gen-fallback-${i}-${Date.now()}`,
           plotId: plot.id,
+          monthYear: activeMonthYear,
           pointNumber: i + 1,
           lat: latMin + offsetLat,
           lng: lngMin + offsetLng,

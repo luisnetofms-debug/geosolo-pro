@@ -69,6 +69,8 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'clients' | 'field_station' | 'lab_results' | 'ai_panel' | 'fertility_maps'>('clients');
   const [globalDesiredV2, setGlobalDesiredV2] = useState<number>(70);
   const [globalPrnt, setGlobalPrnt] = useState<number>(80);
+  const [globalMinDose, setGlobalMinDose] = useState<number>(0.5);
+  const [globalUserCellSizeM, setGlobalUserCellSizeM] = useState<number>(50);
 
   // Db Status Counters
   const [dbStatus, setDbStatus] = useState<'connecting' | 'connected' | 'error'>('connecting');
@@ -246,6 +248,70 @@ export default function App() {
   const activePlot = plots.find((p) => p.id === activePlotId) || plots[0];
   const activeFarm = farms.find((f) => f.id === activePlot?.farmId) || farms[0];
   const activeClient = clients.find((c) => c.id === activeFarm?.clientId) || clients[0];
+
+  const activePeriod = useMemo(() => {
+    return plotPeriods.find(p => p.plotId === activePlotId && p.monthYear === activeMonthYear);
+  }, [plotPeriods, activePlotId, activeMonthYear]);
+
+  // Synchronize state with current active period parameters
+  useEffect(() => {
+    if (activePeriod) {
+      setGlobalDesiredV2(activePeriod.desiredV2 ?? 70);
+      setGlobalPrnt(activePeriod.prnt ?? 80);
+      setGlobalMinDose(activePeriod.minDose ?? 0.5);
+      setGlobalUserCellSizeM(activePeriod.userCellSizeM ?? 50);
+    } else {
+      setGlobalDesiredV2(70);
+      setGlobalPrnt(80);
+      setGlobalMinDose(0.5);
+      setGlobalUserCellSizeM(50);
+    }
+  }, [activePeriod]);
+
+  // Persistent Firestore parameter updates for current period/project
+  const handleUpdateDesiredV2 = async (val: number) => {
+    setGlobalDesiredV2(val);
+    if (activePeriod) {
+      try {
+        await setDoc(doc(db, 'plotPeriods', activePeriod.id), removeUndefined({ ...activePeriod, desiredV2: val }), { merge: true });
+      } catch (err) {
+        console.error("Erro ao atualizar V2 no Firestore:", err);
+      }
+    }
+  };
+
+  const handleUpdatePrnt = async (val: number) => {
+    setGlobalPrnt(val);
+    if (activePeriod) {
+      try {
+        await setDoc(doc(db, 'plotPeriods', activePeriod.id), removeUndefined({ ...activePeriod, prnt: val }), { merge: true });
+      } catch (err) {
+        console.error("Erro ao atualizar PRNT no Firestore:", err);
+      }
+    }
+  };
+
+  const handleUpdateMinDose = async (val: number) => {
+    setGlobalMinDose(val);
+    if (activePeriod) {
+      try {
+        await setDoc(doc(db, 'plotPeriods', activePeriod.id), removeUndefined({ ...activePeriod, minDose: val }), { merge: true });
+      } catch (err) {
+        console.error("Erro ao atualizar dose mínima no Firestore:", err);
+      }
+    }
+  };
+
+  const handleUpdateUserCellSizeM = async (val: number) => {
+    setGlobalUserCellSizeM(val);
+    if (activePeriod) {
+      try {
+        await setDoc(doc(db, 'plotPeriods', activePeriod.id), removeUndefined({ ...activePeriod, userCellSizeM: val }), { merge: true });
+      } catch (err) {
+        console.error("Erro ao atualizar tamanho de célula no Firestore:", err);
+      }
+    }
+  };
 
   // Corrige discrepâncias de área salvas anteriormente por fórmulas antigas e aproximadas do KML
   useEffect(() => {
@@ -789,6 +855,74 @@ export default function App() {
           </div>
         </header>
 
+        {/* MOBILE NAVIGATION TABS (Strictly visible on mobile/tablet) */}
+        <div className="lg:hidden bg-white border-b border-slate-200 px-4 py-3 flex gap-2 overflow-x-auto shrink-0 select-none z-10" id="mobile-tab-navigation">
+          <button
+            id="mobile-tab-clients"
+            onClick={() => setActiveTab('clients')}
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition-all cursor-pointer ${
+              activeTab === 'clients'
+                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 shadow-sm'
+                : 'bg-slate-50 text-slate-650 hover:bg-slate-100 border border-transparent'
+            }`}
+          >
+            <Database className="w-3.5 h-3.5 shrink-0" />
+            <span>Clientes & Fazendas</span>
+          </button>
+          
+          <button
+            id="mobile-tab-field-station"
+            onClick={() => setActiveTab('field_station')}
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition-all cursor-pointer ${
+              activeTab === 'field_station'
+                ? 'bg-indigo-50 text-indigo-700 border border-indigo-200 shadow-sm'
+                : 'bg-slate-50 text-slate-650 hover:bg-slate-100 border border-transparent'
+            }`}
+          >
+            <Compass className="w-3.5 h-3.5 shrink-0" />
+            <span>Estação de Campo</span>
+          </button>
+
+          <button
+            id="mobile-tab-lab-results"
+            onClick={() => setActiveTab('lab_results')}
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition-all cursor-pointer ${
+              activeTab === 'lab_results'
+                ? 'bg-blue-50 text-blue-700 border border-blue-200 shadow-sm'
+                : 'bg-slate-50 text-slate-650 hover:bg-slate-100 border border-transparent'
+            }`}
+          >
+            <CheckSquare className="w-3.5 h-3.5 shrink-0" />
+            <span>Tabela de Laudos</span>
+          </button>
+
+          <button
+            id="mobile-tab-ai-panel"
+            onClick={() => setActiveTab('ai_panel')}
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition-all cursor-pointer ${
+              activeTab === 'ai_panel'
+                ? 'bg-amber-50 text-amber-700 border border-amber-200 shadow-sm'
+                : 'bg-slate-50 text-slate-650 hover:bg-slate-100 border border-transparent'
+            }`}
+          >
+            <CheckSquare className="w-3.5 h-3.5 shrink-0" />
+            <span>Diagnóstico IA</span>
+          </button>
+
+          <button
+            id="mobile-tab-fertility-maps"
+            onClick={() => setActiveTab('fertility_maps')}
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition-all cursor-pointer ${
+              activeTab === 'fertility_maps'
+                ? 'bg-indigo-50 text-indigo-700 border border-indigo-250 shadow-sm'
+                : 'bg-slate-50 text-slate-650 hover:bg-slate-100 border border-transparent'
+            }`}
+          >
+            <Layers className="w-3.5 h-3.5 shrink-0" />
+            <span>Fertilidade & Mapas</span>
+          </button>
+        </div>
+
         {/* SCROLLABLE MAIN LAYOUT CANVAS */}
         <main className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6 bg-[#F8FAFC]">
           
@@ -908,6 +1042,7 @@ export default function App() {
                   setActiveSoilLayer={setActiveSoilLayer}
                   soilLayers={soilLayers}
                   setSoilLayers={setSoilLayers}
+                  activeMonthYear={activeMonthYear}
                 />
               ) : (
                 <div className="bg-white rounded-lg p-10 text-center text-slate-400 border border-dashed border-slate-200 shadow-sm">
@@ -950,9 +1085,9 @@ export default function App() {
                   points={activePoints}
                   onChangePoints={handleUpdatePoints}
                   desiredV2={globalDesiredV2}
-                  setDesiredV2={setGlobalDesiredV2}
+                  setDesiredV2={handleUpdateDesiredV2}
                   prnt={globalPrnt}
-                  setPrnt={setGlobalPrnt}
+                  setPrnt={handleUpdatePrnt}
                 />
               ) : null}
             </section>
@@ -972,9 +1107,13 @@ export default function App() {
                   soilLayers={soilLayers}
                   activeSoilLayer={activeSoilLayer}
                   desiredV2={globalDesiredV2}
-                  setDesiredV2={setGlobalDesiredV2}
+                  setDesiredV2={handleUpdateDesiredV2}
                   prnt={globalPrnt}
-                  setPrnt={setGlobalPrnt}
+                  setPrnt={handleUpdatePrnt}
+                  minDose={globalMinDose}
+                  setMinDose={handleUpdateMinDose}
+                  userCellSizeM={globalUserCellSizeM}
+                  setUserCellSizeM={handleUpdateUserCellSizeM}
                 />
               ) : null}
             </section>

@@ -14,6 +14,10 @@ interface FertilityAndMapsProps {
   setDesiredV2?: (v2: number) => void;
   prnt?: number;
   setPrnt?: (prnt: number) => void;
+  minDose?: number;
+  setMinDose?: (minDose: number) => void;
+  userCellSizeM?: number;
+  setUserCellSizeM?: (size: number) => void;
 }
 
 type TabType = 'resumo' | 'distribuicao' | 'multi_camada' | 'mapa_pontos' | 'calagem';
@@ -83,13 +87,17 @@ export default function FertilityAndMaps({
   setDesiredV2: propSetDesiredV2,
   prnt: propPrnt,
   setPrnt: propSetPrnt,
+  minDose: propMinDose,
+  setMinDose: propSetMinDose,
+  userCellSizeM: propUserCellSizeM,
+  setUserCellSizeM: propSetUserCellSizeM,
 }: FertilityAndMapsProps) {
   const [activeTab, setActiveTab] = useState<TabType>('resumo');
   const [selectedVariable, setSelectedVariable] = useState<keyof SoilLabResults>('pH');
   const [localDesiredV2, setLocalDesiredV2] = useState<number>(70);
   const [localPrnt, setLocalPrnt] = useState<number>(80);
-  const [minDose, setMinDose] = useState<number>(0.5);
-  const [userCellSizeM, setUserCellSizeM] = useState<number>(50);
+  const [localMinDose, setLocalMinDose] = useState<number>(0.5);
+  const [localUserCellSizeM, setLocalUserCellSizeM] = useState<number>(50);
   const [limingManualDoses, setLimingManualDoses] = useState<Record<string, number>>({});
   const [selectedProduct, setSelectedProduct] = useState<'calcarioDolomitico' | 'calcarioCalcitico' | 'gesso' | 'map' | 'kcl' | 'formulado12_15_15' | 'calagem'>('calcarioDolomitico');
   const [selectedPoint, setSelectedPoint] = useState<SamplingPoint | null>(null);
@@ -98,6 +106,10 @@ export default function FertilityAndMaps({
   const setV2Desired = propSetDesiredV2 || setLocalDesiredV2;
   const prnt = propPrnt !== undefined ? propPrnt : localPrnt;
   const setPrnt = propSetPrnt || setLocalPrnt;
+  const minDose = propMinDose !== undefined ? propMinDose : localMinDose;
+  const setMinDose = propSetMinDose || setLocalMinDose;
+  const userCellSizeM = propUserCellSizeM !== undefined ? propUserCellSizeM : localUserCellSizeM;
+  const setUserCellSizeM = propSetUserCellSizeM || setLocalUserCellSizeM;
 
   // Filter points that have collected results for the active plot
   const pointsWithResults = useMemo(() => {
@@ -1192,6 +1204,24 @@ RESUMO DA RECOMENDAÇÃO DE TAXA VARIÁVEL:
                         const colName = selectedProductStats.isKg ? 'DOSE_KGHA' : 'DOSE_THA';
                         let csvContent = `Ponto;Latitude;Longitude;${colName};UNIDADE\n`;
                         
+                        const { minLat: boxMinLat, maxLat: boxMaxLat, minLng: boxMinLng, maxLng: boxMaxLng } = spatialBoundingBox;
+                        const refLat = (boxMinLat + boxMaxLat) / 2;
+                        const refLng = (boxMinLng + boxMaxLng) / 2;
+
+                        const interpPoints: InterpolationPoint[] = pointsWithLiming.map(p => {
+                          const meters = latLngToMeters(p.lat, p.lng, refLat, refLng);
+                          const value = getProductDose(p, plot.cropType, selectedProduct, v2Desired, prnt);
+                          return {
+                            x: meters.x,
+                            y: meters.y,
+                            value
+                          };
+                        });
+
+                        const cols = cellDimensions.cols;
+                        const rows = cellDimensions.rows;
+                        const gridRes = generateInterpolationGrid(interpPoints, cols, rows, 'exponential', 0.1, 1.0, 300);
+
                         interface PointRecord {
                           pointNumber: number;
                           lat: number;
@@ -1200,11 +1230,43 @@ RESUMO DA RECOMENDAÇÃO DE TAXA VARIÁVEL:
                         }
                         const listForShp: PointRecord[] = [];
 
-                        pointsWithResults.forEach((p) => {
-                          const val = getProductDose(p, plot.cropType, selectedProduct, v2Desired, prnt);
-                          csvContent += `${p.pointNumber};${p.lat.toFixed(7)};${p.lng.toFixed(7)};${val};${selectedProductStats.unit.replace('/', '_')}\n`;
-                          listForShp.push({ pointNumber: p.pointNumber, lat: p.lat, lng: p.lng, val });
-                        });
+                        const isPointInPolygon = (pt: { lat: number; lng: number }, poly: { lat: number; lng: number }[]): boolean => {
+                          let inside = false;
+                          for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+                            const xi = poly[i].lng, yi = poly[i].lat;
+                            const xj = poly[j].lng, yj = poly[j].lat;
+                            const intersect = ((yi > pt.lat) !== (yj > pt.lat)) &&
+                              (pt.lng < (xj - xi) * (pt.lat - yi) / (yj - yi) + xi);
+                            if (intersect) inside = !inside;
+                          }
+                          return inside;
+                        };
+
+                        let ptNum = 1;
+                        for (let r = 0; r < rows; r++) {
+                          for (let c = 0; c < cols; c++) {
+                            const localX = gridRes.xMin + (c + 0.5) * ((gridRes.xMax - gridRes.xMin) / cols);
+                            const localY = gridRes.yMin + (r + 0.5) * ((gridRes.yMax - gridRes.yMin) / rows);
+                            const gps = metersToLatLng(localX, localY, refLat, refLng);
+
+                            let shouldExport = true;
+                            if (plot.boundaryPoints && plot.boundaryPoints.length >= 3) {
+                              shouldExport = isPointInPolygon(gps, plot.boundaryPoints);
+                            }
+
+                            if (shouldExport) {
+                              const val = Math.max(0, gridRes.data[r][c]);
+                              csvContent += `${ptNum};${gps.lat.toFixed(7)};${gps.lng.toFixed(7)};${val.toFixed(2)};${selectedProductStats.unit.replace('/', '_')}\n`;
+                              listForShp.push({
+                                pointNumber: ptNum,
+                                lat: gps.lat,
+                                lng: gps.lng,
+                                val: val
+                              });
+                              ptNum++;
+                            }
+                          }
+                        }
 
                         // Calculate spatial limits for Shapefile Header
                         let minLng = Infinity, maxLng = -Infinity;
