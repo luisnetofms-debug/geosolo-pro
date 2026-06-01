@@ -71,6 +71,7 @@ export default function App() {
   const [globalPrnt, setGlobalPrnt] = useState<number>(80);
   const [globalMinDose, setGlobalMinDose] = useState<number>(0.5);
   const [globalUserCellSizeM, setGlobalUserCellSizeM] = useState<number>(50);
+  const [globalFieldReady, setGlobalFieldReady] = useState<boolean>(false);
 
   // Db Status Counters
   const [dbStatus, setDbStatus] = useState<'connecting' | 'connected' | 'error'>('connecting');
@@ -260,13 +261,26 @@ export default function App() {
       setGlobalPrnt(activePeriod.prnt ?? 80);
       setGlobalMinDose(activePeriod.minDose ?? 0.5);
       setGlobalUserCellSizeM(activePeriod.userCellSizeM ?? 50);
+      setGlobalFieldReady(activePeriod.fieldReady ?? false);
     } else {
       setGlobalDesiredV2(70);
       setGlobalPrnt(80);
       setGlobalMinDose(0.5);
       setGlobalUserCellSizeM(50);
+      setGlobalFieldReady(false);
     }
   }, [activePeriod]);
+
+  const handleUpdateFieldReady = async (val: boolean) => {
+    setGlobalFieldReady(val);
+    if (activePeriod) {
+      try {
+        await setDoc(doc(db, 'plotPeriods', activePeriod.id), removeUndefined({ ...activePeriod, fieldReady: val }), { merge: true });
+      } catch (err) {
+        console.error("Erro ao atualizar status de pronto para o campo no Firestore:", err);
+      }
+    }
+  };
 
   // Persistent Firestore parameter updates for current period/project
   const handleUpdateDesiredV2 = async (val: number) => {
@@ -1043,6 +1057,8 @@ export default function App() {
                   soilLayers={soilLayers}
                   setSoilLayers={setSoilLayers}
                   activeMonthYear={activeMonthYear}
+                  fieldReady={globalFieldReady}
+                  setFieldReady={handleUpdateFieldReady}
                 />
               ) : (
                 <div className="bg-white rounded-lg p-10 text-center text-slate-400 border border-dashed border-slate-200 shadow-sm">

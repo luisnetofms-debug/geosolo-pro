@@ -119,6 +119,7 @@ export interface PlotPeriod {
   prnt?: number;           // PRNT do Calcário % para recomendação
   minDose?: number;        // Dose Mínima de calcário t/ha
   userCellSizeM?: number;  // Tamanho do grid em metros
+  fieldReady?: boolean;    // Se o projeto está pronto para ir a campo
 }
 
 export interface Project {

@@ -19,6 +19,8 @@ interface MapContainerProps {
   soilLayers: string[];
   setSoilLayers: (layers: string[]) => void;
   activeMonthYear?: string;
+  fieldReady?: boolean;
+  setFieldReady?: (ready: boolean) => void;
 }
 
 export default function MapContainer({
@@ -33,6 +35,8 @@ export default function MapContainer({
   soilLayers,
   setSoilLayers,
   activeMonthYear,
+  fieldReady = false,
+  setFieldReady,
 }: MapContainerProps) {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
@@ -53,6 +57,15 @@ export default function MapContainer({
   const [simulatedGPS, setSimulatedGPS] = useState<{ lat: number; lng: number } | null>(null);
   const [trackingActive, setTrackingActive] = useState<boolean>(false);
   const gpsIntervalRef = useRef<any>(null);
+
+  // Real-time Device GPS states
+  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number; accuracy?: number } | null>(null);
+  const [liveGeoTracking, setLiveGeoTracking] = useState<boolean>(false);
+  const watchIdRef = useRef<number | null>(null);
+
+  // Refs for tracking markers to prevent full component redraws
+  const gpsMarkerRef = useRef<L.Marker | null>(null);
+  const gpsCircleRef = useRef<L.Circle | null>(null);
 
   // Custom Point Adding state
   const [manuallyClickToAdd, setManuallyClickToAdd] = useState<boolean>(false);
@@ -258,6 +271,87 @@ export default function MapContainer({
     reader.readAsText(file);
   };
 
+  useEffect(() => {
+    if (fieldReady) {
+      setActiveTab('coleta');
+    }
+  }, [fieldReady]);
+
+  // Manage Device Geolocation tracking
+  const stopRealGeoTracking = () => {
+    if (watchIdRef.current !== null) {
+      navigator.geolocation.clearWatch(watchIdRef.current);
+      watchIdRef.current = null;
+    }
+    setLiveGeoTracking(false);
+    setUserLocation(null);
+  };
+
+  const startRealGeoTracking = () => {
+    if (!navigator.geolocation) {
+      alert("Seu navegador ou dispositivo não suporta geolocalização.");
+      return;
+    }
+
+    setLiveGeoTracking(true);
+    
+    // Stop simulated tracking if active to avoid conflicting markers
+    if (trackingActive) {
+      setTrackingActive(false);
+    }
+
+    watchIdRef.current = navigator.geolocation.watchPosition(
+      (position) => {
+        const { latitude, longitude, accuracy } = position.coords;
+        setUserLocation({ lat: latitude, lng: longitude, accuracy });
+        
+        // Auto-center map if we lock on GPS
+        if (mapInstanceRef.current) {
+          mapInstanceRef.current.setView([latitude, longitude], 18);
+        }
+      },
+      (err) => {
+        console.error("Erro GPS:", err);
+        let msg = "Não foi possível obter sua localização GPS.";
+        if (err.code === err.PERMISSION_DENIED) {
+          msg = "Permissão de GPS negada. Por favor, autorize o acesso à localização.";
+        } else if (err.code === err.POSITION_UNAVAILABLE) {
+          msg = "Sinal de GPS indisponível no momento.";
+        } else if (err.code === err.TIMEOUT) {
+          msg = "Tempo limite para obter localização GPS esgotado.";
+        }
+        alert(msg);
+        stopRealGeoTracking();
+      },
+      {
+        enableHighAccuracy: true,
+        maximumAge: 0,
+        timeout: 12000
+      }
+    );
+  };
+
+  const toggleRealGeoTracking = () => {
+    if (liveGeoTracking) {
+      if (userLocation && mapInstanceRef.current) {
+        mapInstanceRef.current.setView([userLocation.lat, userLocation.lng], 18);
+      } else {
+        stopRealGeoTracking();
+      }
+    } else {
+      startRealGeoTracking();
+    }
+  };
+
+  // Ensure precision GPS is stopped if component unmounts
+  useEffect(() => {
+    return () => {
+      if (watchIdRef.current !== null) {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+      }
+    };
+  }, []);
+
   // 1. Initialize Map
   useEffect(() => {
     if (!mapContainerRef.current) return;
@@ -355,6 +449,99 @@ export default function MapContainer({
     tileLayerRef.current = newTileLayer;
   }, [offlineMode, plot.id]);
 
+  // 1.8 Real-time Position Marker & Accuracy Circle Handler
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+
+    // Helper to clean up GPS layers
+    const removeGPSLayers = () => {
+      if (gpsMarkerRef.current) {
+        map.removeLayer(gpsMarkerRef.current);
+        gpsMarkerRef.current = null;
+      }
+      if (gpsCircleRef.current) {
+        map.removeLayer(gpsCircleRef.current);
+        gpsCircleRef.current = null;
+      }
+    };
+
+    const activeGPS = simulatedGPS || userLocation;
+
+    if (!activeGPS) {
+      removeGPSLayers();
+      return;
+    }
+
+    const { lat, lng } = activeGPS;
+    const isSimulated = !!simulatedGPS;
+    const colorClass = isSimulated ? 'emerald' : 'blue';
+    const hexColor = isSimulated ? '#10b981' : '#3b82f6';
+
+    const accuracy = !isSimulated && userLocation?.accuracy ? userLocation.accuracy : 15;
+
+    // A. Update or create the circle representing accuracy
+    if (!gpsCircleRef.current) {
+      gpsCircleRef.current = L.circle([lat, lng], {
+        radius: accuracy,
+        color: hexColor,
+        fillColor: hexColor,
+        fillOpacity: 0.12,
+        weight: 1.5,
+        dashArray: isSimulated ? '4, 4' : undefined
+      }).addTo(map);
+    } else {
+      gpsCircleRef.current.setLatLng([lat, lng]);
+      gpsCircleRef.current.setRadius(accuracy);
+      gpsCircleRef.current.setStyle({ color: hexColor, fillColor: hexColor });
+    }
+
+    // B. Update or create the pulsing GPS dot marker
+    const gpsHtml = isSimulated 
+      ? `
+        <div class="relative flex items-center justify-center w-6 h-6">
+          <div class="absolute w-5 h-5 rounded-full bg-emerald-500/40 animate-ping"></div>
+          <div class="absolute w-4 h-4 rounded-full bg-emerald-600 border-2 border-white shadow-lg flex items-center justify-center">
+            <div class="w-1.5 h-1.5 rounded-full bg-white"></div>
+          </div>
+        </div>
+      `
+      : `
+        <div class="relative flex items-center justify-center w-6 h-6">
+          <div class="absolute w-5 h-5 rounded-full bg-blue-500/40 animate-ping"></div>
+          <div class="absolute w-4 h-4 rounded-full bg-blue-600 border-2 border-white shadow-lg flex items-center justify-center">
+            <div class="w-1.5 h-1.5 rounded-full bg-white"></div>
+          </div>
+        </div>
+      `;
+
+    const gpsIcon = L.divIcon({
+      className: 'gps-marker-leaflet-div',
+      html: gpsHtml,
+      iconSize: [24, 24],
+      iconAnchor: [12, 12]
+    });
+
+    if (!gpsMarkerRef.current) {
+      gpsMarkerRef.current = L.marker([lat, lng], {
+        icon: gpsIcon,
+        zIndexOffset: 1200
+      }).addTo(map);
+      
+      // Initially pan to accuracy region
+      map.setView([lat, lng], 17);
+    } else {
+      gpsMarkerRef.current.setLatLng([lat, lng]);
+      gpsMarkerRef.current.setIcon(gpsIcon);
+    }
+
+    // Return cleanup to properly remove layers if component updates/unmounts
+    return () => {
+      // Avoid complete removal here on quick coordinates updates to prevent flickers,
+      // but if the lat/lng becomes unset, the main rendering effect cleans it up
+    };
+  }, [simulatedGPS, userLocation]);
+
   // 2. Render Layers, Boundary & Markers Overlays
   useEffect(() => {
     const map = mapInstanceRef.current;
@@ -404,7 +591,7 @@ export default function MapContainer({
           // Add Marker with draggable option
           const marker = L.marker([p.lat, p.lng], { 
             icon: markerIcon,
-            draggable: true 
+            draggable: !fieldReady 
           }).addTo(pointsGroupRef.current!);
 
           // Handle point dragging/editing coordinates
@@ -434,9 +621,11 @@ export default function MapContainer({
             </div>
             
             <div id="view-mode-${p.id}" class="space-y-1.5">
+              ${!fieldReady ? `
               <div class="text-[10px] text-slate-500 italic bg-slate-50 p-1 rounded font-sans">
                 💡 Clique e segure no ponto para arrastar e alterar a localização.
               </div>
+              ` : ''}
               <div><b>Coords:</b> ${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}</div>
               <div><b>Status:</b> ${p.isCollected ? '✅ Coletado' : '❌ Pendente'}</div>
               ${p.results ? `
@@ -447,13 +636,15 @@ export default function MapContainer({
                   <div><b>Potássio K:</b> ${p.results.K} mmolc</div>
                 </div>` : '<div class="text-[10px] text-amber-700 bg-amber-50 p-1.5 rounded font-medium">Nenhum resultado químico inserido</div>'}
               <div class="flex gap-1.5 pt-1.5 border-t border-slate-100 mt-2">
-                <button id="toggle-collect-${p.id}" class="flex-1 px-1 py-1 px-2 py-1.5 bg-slate-100 hover:bg-emerald-50 text-slate-650 hover:text-emerald-700 hover:border-emerald-200 border border-slate-200 rounded font-bold text-[10px] cursor-pointer text-center">
+                <button id="toggle-collect-${p.id}" class="flex-1 px-1 py-1.5 bg-slate-100 hover:bg-emerald-50 text-slate-650 hover:text-emerald-700 hover:border-emerald-200 border border-slate-200 rounded font-bold text-[10px] cursor-pointer text-center">
                   ${p.isCollected ? 'Desfazer' : 'Coletar'}
                 </button>
+                ${!fieldReady ? `
                 <button id="toggle-edit-${p.id}" class="flex-1 px-1 py-1.5 bg-slate-100 hover:bg-indigo-50 text-slate-650 hover:text-indigo-700 hover:border-indigo-250 border border-slate-200 rounded font-bold text-[10px] cursor-pointer text-center">
                   ✏️ Editar
                 </button>
                 <button id="delete-pt-${p.id}" class="px-2 py-1.5 bg-rose-50 text-rose-600 hover:bg-rose-100 border border-rose-100 rounded text-[10px] cursor-pointer font-bold" title="Excluir">🗑️</button>
+                ` : ''}
               </div>
             </div>
 
@@ -607,7 +798,7 @@ export default function MapContainer({
       setSimulatedGPS(null);
     }
 
-  }, [plot.id, points, showGrid]);
+  }, [plot.id, points, showGrid, fieldReady]);
 
   // 3. Render Kriging Interpolation Layer Over the Boundary
   useEffect(() => {
@@ -696,6 +887,9 @@ export default function MapContainer({
       setTrackingActive(false);
       return;
     }
+
+    // Stop real-time GPS if it was active
+    stopRealGeoTracking();
 
     setTrackingActive(true);
     // Find centers
@@ -863,175 +1057,215 @@ export default function MapContainer({
           </div>
         </div>
 
-        <div className="flex border-b border-slate-100 bg-slate-50 p-1 rounded-lg">
-          <button
-            onClick={() => setActiveTab('coleta')}
-            className={`w-1/2 py-2 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
-              activeTab === 'coleta' 
-                ? 'bg-white text-emerald-700 shadow-sm' 
-                : 'text-slate-500 hover:text-slate-700'
-            }`}
-          >
-            Navegação & Coleta
-          </button>
-          <button
-            onClick={() => setActiveTab('interpolacao')}
-            className={`w-1/2 py-2 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
-              activeTab === 'interpolacao' 
-                ? 'bg-white text-indigo-700 shadow-sm' 
-                : 'text-slate-500 hover:text-slate-700'
-            }`}
-          >
-            Interpolação (Krigagem)
-          </button>
-        </div>
+        {!fieldReady && (
+          <div className="flex border-b border-slate-100 bg-slate-50 p-1 rounded-lg">
+            <button
+              onClick={() => setActiveTab('coleta')}
+              className={`w-1/2 py-2 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
+                activeTab === 'coleta' 
+                  ? 'bg-white text-emerald-700 shadow-sm' 
+                  : 'text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              Navegação & Coleta
+            </button>
+            <button
+              onClick={() => setActiveTab('interpolacao')}
+              className={`w-1/2 py-2 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
+                activeTab === 'interpolacao' 
+                  ? 'bg-white text-indigo-700 shadow-sm' 
+                  : 'text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              Interpolação (Krigagem)
+            </button>
+          </div>
+        )}
 
         {/* Tab 1: Navigation & Field operations */}
         {activeTab === 'coleta' && (
           <div className="space-y-4">
-            <div className="bg-slate-50 rounded-lg p-3.5 border border-slate-100">
-              <h5 className="text-xs font-bold text-slate-700 uppercase tracking-wide">Planejamento de Grade</h5>
-              <p className="text-slate-400 text-[10px] mt-0.5">Defina a malha em hectares para gerar furos amostrais automáticos.</p>
-              
-              <div className="mt-3 space-y-3">
-                <div>
-                  <label className="flex justify-between text-xs text-slate-650 mb-1">
-                    <span>Espaçamento da Malha</span>
-                    <span className="font-semibold text-slate-800">{gridSpacing}m (~{(gridSpacing * gridSpacing / 10000).toFixed(1)} ha)</span>
-                  </label>
-                  <input
-                    type="range"
-                    min="60"
-                    max="220"
-                    step="20"
-                    value={gridSpacing}
-                    onChange={(e) => setGridSpacing(parseInt(e.target.value))}
-                    className="w-full accent-emerald-500 h-1 bg-slate-200 rounded-lg"
-                  />
+            {fieldReady ? (
+              <div className="space-y-3">
+                <div className="bg-emerald-50 border border-emerald-200/60 rounded-xl p-4 text-emerald-900 shadow-sm">
+                  <div className="flex items-center gap-2 font-black text-[11px] uppercase tracking-wider text-emerald-800">
+                    <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <span>Pronto para Ir ao Campo!</span>
+                  </div>
+                  <p className="text-[10.5px] leading-relaxed text-emerald-750 mt-1.5">
+                    Os pontos amostrais estão consolidados e bloqueados no mapa. Navegue até os locais, realize os furos e registre o status de coleta tocando nos pinos.
+                  </p>
                 </div>
 
-                <div>
-                  <span className="text-[9px] text-slate-450 uppercase font-bold tracking-wider block mb-1.5">Opções Padrão (Grade)</span>
-                  <div className="flex gap-1">
-                    {[
-                      { label: '1 ha', value: 100 },
-                      { label: '2 ha', value: 140 },
-                      { label: '3 ha', value: 170 },
-                      { label: '4 ha', value: 200 },
-                      { label: '5 ha', value: 220 }
-                    ].map((opt) => {
-                      const isActive = Math.abs(gridSpacing - opt.value) <= 10;
-                      return (
-                        <button
-                          key={opt.label}
-                          type="button"
-                          onClick={() => setGridSpacing(opt.value)}
-                          className={`flex-1 text-center py-1 rounded text-[10px] font-bold cursor-pointer transition-all border ${
-                            isActive
-                              ? 'bg-[#10b981] text-white border-[#10b981] shadow-sm'
-                              : 'bg-white hover:bg-slate-100 text-slate-700 border-slate-200'
-                          }`}
-                        >
-                          {opt.label}
-                        </button>
-                      );
-                    })}
+                <div className="bg-slate-50 rounded-xl p-4 border border-slate-200 shadow-sm space-y-2.5">
+                  <div className="text-[11px] font-extrabold text-slate-700 uppercase tracking-wide">Status de Coleta de Campo</div>
+                  <div className="space-y-1.5 text-xs">
+                    <div className="flex justify-between items-center bg-white p-2 rounded border border-slate-100">
+                      <span className="text-slate-500 font-medium">Furos Programados:</span>
+                      <span className="font-extrabold text-slate-800">{points.length} furos</span>
+                    </div>
+                    <div className="flex justify-between items-center bg-white p-2 rounded border border-slate-100">
+                      <span className="text-slate-500 font-medium">Pontos Coletados:</span>
+                      <span className="font-extrabold text-emerald-600">
+                        {points.filter(p => p.isCollected).length} / {points.length} ({points.length > 0 ? Math.round((points.filter(p => p.isCollected).length / points.length) * 100) : 0}%)
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center bg-white p-2 rounded border border-slate-100">
+                      <span className="text-slate-500 font-medium">Aguardando Lab:</span>
+                      <span className="font-extrabold text-amber-600">
+                        {points.filter(p => p.isCollected && !p.results).length} amostras
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="bg-slate-50 rounded-lg p-3.5 border border-slate-100">
+                  <h5 className="text-xs font-bold text-slate-700 uppercase tracking-wide">Planejamento de Grade</h5>
+                  <p className="text-slate-400 text-[10px] mt-0.5">Defina a malha em hectares para gerar furos amostrais automáticos.</p>
+                  
+                  <div className="mt-3 space-y-3">
+                    <div>
+                      <label className="flex justify-between text-xs text-slate-650 mb-1">
+                        <span>Espaçamento da Malha</span>
+                        <span className="font-semibold text-slate-800">{gridSpacing}m (~{(gridSpacing * gridSpacing / 10000).toFixed(1)} ha)</span>
+                      </label>
+                      <input
+                        type="range"
+                        min="60"
+                        max="220"
+                        step="20"
+                        value={gridSpacing}
+                        onChange={(e) => setGridSpacing(parseInt(e.target.value))}
+                        className="w-full accent-emerald-500 h-1 bg-slate-200 rounded-lg"
+                      />
+                    </div>
+
+                    <div>
+                      <span className="text-[9px] text-slate-450 uppercase font-bold tracking-wider block mb-1.5">Opções Padrão (Grade)</span>
+                      <div className="flex gap-1">
+                        {[
+                          { label: '1 ha', value: 100 },
+                          { label: '2 ha', value: 140 },
+                          { label: '3 ha', value: 170 },
+                          { label: '4 ha', value: 200 },
+                          { label: '5 ha', value: 220 }
+                        ].map((opt) => {
+                          const isActive = Math.abs(gridSpacing - opt.value) <= 10;
+                          return (
+                            <button
+                              key={opt.label}
+                              type="button"
+                              onClick={() => setGridSpacing(opt.value)}
+                              className={`flex-1 text-center py-1 rounded text-[10px] font-bold cursor-pointer transition-all border ${
+                                isActive
+                                  ? 'bg-[#10b981] text-white border-[#10b981] shadow-sm'
+                                  : 'bg-white hover:bg-slate-100 text-slate-700 border-slate-200'
+                              }`}
+                            >
+                              {opt.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <button
+                        onClick={handleAutoGenerateSamplingGrid}
+                        className="flex-1 py-1 px-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-xs font-semibold transition-colors flex items-center justify-center gap-1 cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        Gerar Grade
+                      </button>
+                      <button
+                        onClick={() => setManuallyClickToAdd(!manuallyClickToAdd)}
+                        className={`px-2.5 py-1 text-xs border rounded font-semibold flex items-center gap-1 cursor-pointer ${
+                          manuallyClickToAdd 
+                            ? 'border-red-400 bg-red-50 text-red-700' 
+                            : 'border-slate-200 hover:bg-slate-50 text-slate-700'
+                        }`}
+                        title="Selecione um local no mapa para adicionar ponto na Zona de Manejo"
+                      >
+                        {manuallyClickToAdd ? 'Cancelar Clique' : 'Inserir Ponto'}
+                      </button>
+                    </div>
                   </div>
                 </div>
 
-                <div className="flex gap-2">
-                  <button
-                    onClick={handleAutoGenerateSamplingGrid}
-                    className="flex-1 py-1 px-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-xs font-semibold transition-colors flex items-center justify-center gap-1 cursor-pointer"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    Gerar Grade
-                  </button>
-                  <button
-                    onClick={() => setManuallyClickToAdd(!manuallyClickToAdd)}
-                    className={`px-2.5 py-1 text-xs border rounded font-semibold flex items-center gap-1 cursor-pointer ${
-                      manuallyClickToAdd 
-                        ? 'border-red-400 bg-red-50 text-red-700' 
-                        : 'border-slate-200 hover:bg-slate-50 text-slate-700'
-                    }`}
-                    title="Selecione um local no mapa para adicionar ponto na Zona de Manejo"
-                  >
-                    {manuallyClickToAdd ? 'Cancelar Clique' : 'Inserir Ponto'}
-                  </button>
+                <div className="bg-slate-50 rounded-lg p-3.5 border border-slate-100 space-y-2">
+                  <h5 className="text-xs font-bold text-slate-700 uppercase tracking-wide flex items-center gap-1.5">
+                    <Upload className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                    Importar Arquivo KML
+                  </h5>
+                  <p className="text-slate-400 text-[10px]">Escolha um KML para atualizar os limites do talhão ou carregar marcas de furos do Google Earth.</p>
+                  
+                  <div className="space-y-2 mt-2">
+                    <label className="flex flex-col items-center justify-center w-full h-20 border-2 border-slate-200 border-dashed rounded bg-white hover:bg-slate-50 transition-colors cursor-pointer p-2">
+                      <div className="flex flex-col items-center justify-center text-center">
+                        <Upload className="w-5 h-5 text-slate-400 mb-0.5 shrink-0" />
+                        <span className="text-[10px] text-slate-600 font-bold block">Selecionar KML</span>
+                        <span className="text-[8px] text-slate-400 block font-medium">Google Earth .kml</span>
+                      </div>
+                      <input 
+                        type="file" 
+                        accept=".kml" 
+                        className="hidden" 
+                        onChange={handleKmlImport} 
+                      />
+                    </label>
+
+                    {kmlError && (
+                      <div className="text-[10px] bg-rose-50 text-rose-700 border border-rose-100 p-2 rounded leading-tight">
+                        ❌ {kmlError}
+                      </div>
+                    )}
+
+                    {kmlSuccess && (
+                      <div className="text-[10px] bg-emerald-50 text-emerald-800 border border-emerald-100 p-2 rounded leading-tight">
+                        ✅ {kmlSuccess}
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
-            </div>
 
-            <div className="bg-slate-50 rounded-lg p-3.5 border border-slate-100 space-y-2">
-              <h5 className="text-xs font-bold text-slate-700 uppercase tracking-wide flex items-center gap-1.5">
-                <Upload className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                Importar Arquivo KML
-              </h5>
-              <p className="text-slate-400 text-[10px]">Escolha um KML para atualizar os limites do talhão ou carregar marcas de furos do Google Earth.</p>
-              
-              <div className="space-y-2 mt-2">
-                <label className="flex flex-col items-center justify-center w-full h-20 border-2 border-slate-200 border-dashed rounded bg-white hover:bg-slate-50 transition-colors cursor-pointer p-2">
-                  <div className="flex flex-col items-center justify-center text-center">
-                    <Upload className="w-5 h-5 text-slate-400 mb-0.5 shrink-0" />
-                    <span className="text-[10px] text-slate-600 font-bold block">Selecionar KML</span>
-                    <span className="text-[8px] text-slate-400 block font-medium">Google Earth .kml</span>
+                <div className="bg-slate-50 rounded-lg p-3.5 border border-slate-100">
+                  <h5 className="text-xs font-bold text-slate-700 uppercase tracking-wide">Testar Coleta em Tempo Real</h5>
+                  <p className="text-slate-400 text-[10px]">Simule um tablet GPS de campo coletando amostras de terra no talhão.</p>
+                  
+                  <div className="mt-3">
+                    <button
+                      onClick={handleToggleTracking}
+                      className={`w-full py-2 px-3 rounded text-xs font-semibold transition-colors flex items-center justify-center gap-2 cursor-pointer ${
+                        trackingActive 
+                          ? 'bg-amber-100 text-amber-800 hover:bg-amber-200' 
+                          : 'bg-slate-800 text-white hover:bg-slate-900'
+                      }`}
+                    >
+                      <Compass className={`w-3.5 h-3.5 ${trackingActive ? 'animate-spin' : ''}`} />
+                      {trackingActive ? 'Parar Simulação GPS' : 'Iniciar Caminhada GPS'}
+                    </button>
                   </div>
-                  <input 
-                    type="file" 
-                    accept=".kml" 
-                    className="hidden" 
-                    onChange={handleKmlImport} 
-                  />
-                </label>
+                </div>
 
-                {kmlError && (
-                  <div className="text-[10px] bg-rose-50 text-rose-700 border border-rose-100 p-2 rounded leading-tight">
-                    ❌ {kmlError}
+                <div className="bg-slate-50 rounded-lg p-3.5 border border-slate-100 text-[11px] space-y-1">
+                  <div className="font-semibold text-slate-700 mb-1">Status Operacional:</div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Tamanho da grade:</span>
+                    <span className="font-bold text-slate-700">{points.length} furos</span>
                   </div>
-                )}
-
-                {kmlSuccess && (
-                  <div className="text-[10px] bg-emerald-50 text-emerald-800 border border-emerald-100 p-2 rounded leading-tight">
-                    ✅ {kmlSuccess}
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Pontos coletados:</span>
+                    <span className="font-bold text-emerald-600">{points.filter(p => p.isCollected).length} pontos</span>
                   </div>
-                )}
-              </div>
-            </div>
-
-            <div className="bg-slate-50 rounded-lg p-3.5 border border-slate-100">
-              <h5 className="text-xs font-bold text-slate-700 uppercase tracking-wide">Testar Coleta em Tempo Real</h5>
-              <p className="text-slate-400 text-[10px]">Simule um tablet GPS de campo coletando amostras de terra no talhão.</p>
-              
-              <div className="mt-3">
-                <button
-                  onClick={handleToggleTracking}
-                  className={`w-full py-2 px-3 rounded text-xs font-semibold transition-colors flex items-center justify-center gap-2 cursor-pointer ${
-                    trackingActive 
-                      ? 'bg-amber-100 text-amber-800 hover:bg-amber-200' 
-                      : 'bg-slate-800 text-white hover:bg-slate-900'
-                  }`}
-                >
-                  <Compass className={`w-3.5 h-3.5 ${trackingActive ? 'animate-spin' : ''}`} />
-                  {trackingActive ? 'Parar Simulação GPS' : 'Iniciar Caminhada GPS'}
-                </button>
-              </div>
-            </div>
-
-            <div className="bg-slate-50 rounded-lg p-3.5 border border-slate-100 text-[11px] space-y-1">
-              <div className="font-semibold text-slate-700 mb-1">Status Operacional:</div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Tamanho da grade:</span>
-                <span className="font-bold text-slate-700">{points.length} furos</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Pontos coletados:</span>
-                <span className="font-bold text-emerald-600">{points.filter(p => p.isCollected).length} pontos</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Aguardando lab:</span>
-                <span className="font-bold text-amber-600">{points.filter(p => p.isCollected && !p.results).length} amostras</span>
-              </div>
-            </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Aguardando lab:</span>
+                    <span className="font-bold text-amber-600">{points.filter(p => p.isCollected && !p.results).length} amostras</span>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
         )}
 
@@ -1116,7 +1350,7 @@ export default function MapContainer({
         )}
 
         {/* Dynamic Offline / Online Indicator Toggle to fulfill visual requirements */}
-        <div className="pt-4 border-t border-slate-100">
+        <div className="pt-4 border-t border-slate-100 space-y-2">
           <button
             onClick={() => setOfflineMode(!offlineMode)}
             className={`w-full flex items-center justify-between px-3.5 py-2 rounded-lg text-xs font-semibold border transition-all cursor-pointer ${
@@ -1132,6 +1366,28 @@ export default function MapContainer({
             <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-white border font-bold uppercase shadow-inner">
               {offlineMode ? 'Memória Cache' : 'Hybrid'}
             </span>
+          </button>
+
+          {/* "Pronto para ir ao campo!" Toggle Button */}
+          <button
+            onClick={() => setFieldReady?.(!fieldReady)}
+            className={`w-full flex items-center justify-center gap-2 px-3.5 py-2.5 rounded-lg text-xs font-bold transition-all border cursor-pointer shadow-sm ${
+              fieldReady 
+                ? 'bg-rose-50 hover:bg-rose-100 text-rose-800 border-rose-200' 
+                : 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600 hover:shadow shadow-emerald-200'
+            }`}
+          >
+            {fieldReady ? (
+              <>
+                <Ban className="w-4 h-4 text-rose-600 shrink-0" />
+                <span>Voltar ao Planejamento</span>
+              </>
+            ) : (
+              <>
+                <Navigation className="w-4 h-4 text-emerald-100 shrink-0 animate-pulse" />
+                <span>Pronto para ir ao campo!</span>
+              </>
+            )}
           </button>
         </div>
 
@@ -1152,28 +1408,47 @@ export default function MapContainer({
         <div className="absolute top-3 right-3 z-[1001] flex flex-col gap-2">
           <button
             onClick={() => setShowGrid(!showGrid)}
-            className={`flex items-center gap-1.5 px-3 py-2 rounded-lg shadow-md text-xs font-bold cursor-pointer transition-all border ${
+            className={`flex items-center justify-between gap-1.5 px-3 py-2 rounded-lg shadow-md text-xs font-bold cursor-pointer transition-all border ${
               showGrid
                 ? 'bg-emerald-600 border-emerald-500 text-white hover:bg-emerald-700'
                 : 'bg-slate-900/90 border-slate-700 text-slate-300 hover:bg-slate-800'
             }`}
             title="Mostrar ou Ocultar Grade Amostral no Mapa"
           >
-            <Layers className="w-3.5 h-3.5" />
+            <Layers className="w-3.5 h-3.5 shrink-0" />
             <span>{showGrid ? 'Ocultar Grade' : 'Exibir Grade'}</span>
+          </button>
+
+          <button
+            onClick={toggleRealGeoTracking}
+            className={`flex items-center justify-between gap-1.5 px-3 py-2 rounded-lg shadow-md text-xs font-bold cursor-pointer transition-all border ${
+              liveGeoTracking
+                ? 'bg-blue-600 border-blue-500 text-white hover:bg-blue-700 animate-pulse'
+                : 'bg-slate-900/90 border-slate-700 text-slate-300 hover:bg-slate-800'
+            }`}
+            title={liveGeoTracking ? 'GPS Conectado! Clique para centralizar no mapa.' : 'Utilizar GPS real do seu celular/tablet'}
+          >
+            <Compass className={`w-3.5 h-3.5 shrink-0 ${liveGeoTracking ? 'animate-spin' : ''}`} />
+            <span>{liveGeoTracking ? 'Centralizar GPS' : 'Ativar meu GPS'}</span>
           </button>
         </div>
 
-        {/* Simulated coordinates/heading indicator bar */}
-        <div className="absolute bottom-3 right-3 z-[1000] bg-slate-900/80 backdrop-blur-md px-3 py-1.5 rounded-lg border border-slate-800 text-[10px] font-mono text-slate-300 flex items-center gap-3">
+        {/* Dynamic coordinates / heading indicator bar */}
+        <div className="absolute bottom-3 right-3 z-[1000] bg-slate-900/85 backdrop-blur-md px-3 py-1.5 rounded-lg border border-slate-800 text-[10px] font-mono text-slate-300 flex items-center gap-3 shadow-lg">
           <div className="flex items-center gap-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping"></span>
-            <span>HDG: 184° S</span>
+            <span className={`w-1.5 h-1.5 rounded-full ${liveGeoTracking ? 'bg-blue-500' : (trackingActive ? 'bg-emerald-500' : 'bg-slate-500')} animate-ping`}></span>
+            <span className="font-bold">{liveGeoTracking ? 'GPS ATIVO' : (trackingActive ? 'SIMULANDO' : 'ESTÁTICO')}</span>
           </div>
           <span>•</span>
-          <span>LAT: {simulatedGPS ? simulatedGPS.lat.toFixed(5) : plot.boundaryPoints[0].lat.toFixed(5)}</span>
+          <span>LAT: {(simulatedGPS || userLocation) ? (simulatedGPS || userLocation)!.lat.toFixed(6) : (plot.boundaryPoints[0] ? plot.boundaryPoints[0].lat.toFixed(6) : '0.0')}</span>
           <span>•</span>
-          <span>LNG: {simulatedGPS ? simulatedGPS.lng.toFixed(5) : plot.boundaryPoints[0].lng.toFixed(5)}</span>
+          <span>LNG: {(simulatedGPS || userLocation) ? (simulatedGPS || userLocation)!.lng.toFixed(6) : (plot.boundaryPoints[0] ? plot.boundaryPoints[0].lng.toFixed(6) : '0.0')}</span>
+          {(!simulatedGPS && userLocation?.accuracy) && (
+            <>
+              <span>•</span>
+              <span className="text-blue-400 font-bold">PREC: ±{userLocation.accuracy.toFixed(1)}m</span>
+            </>
+          )}
         </div>
 
         {/* HTML Leaflet Map Div */}
