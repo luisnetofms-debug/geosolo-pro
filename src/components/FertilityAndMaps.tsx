@@ -1189,19 +1189,25 @@ COMO IMPORTAR NO MONITOR TOPPER 5500:
    - Vá em "Trabalho" > "Importar" > "Mapa de Recomendação".
    - Selecione a opção "Shapefile (.shp)" ou "Grade CSV".
    - Alvo ou Canal de Aplicação: Escolha o distribuidor de insumos (Canal 1).
-   - Atributo de Dose: Selecione a coluna "${selectedProductStats.isKg ? 'DOSE_KGHA' : 'DOSE_THA'}" (unidade: ${selectedProductStats.unit}).
+   - Atributo de Dose: Selecione a coluna "DOSE_KGHA" (unidade: kg/ha).
 
-RESUMO DA RECOMENDAÇÃO DE TAXA VARIÁVEL:
+NOTA DE COMPATIBILIDADE:
+------------------------------------------------------------------------
+O monitor Stara Topper 5500 requer nativamente a leitura de doses em KG/HA.
+As doses deste mapa (originalmente planejadas em toneladas por hectare t/ha) foram 
+automaticamente multiplicadas por 1.000 (convertidas para kg/ha) exclusivamente para os arquivos deste ZIP.
+
+RESUMO DA RECOMENDAÇÃO DE TAXA VARIÁVEL (EM KG/HA):
 ------------------------------------------------------------------------
 - Produto Selecionado: ${selectedProductStats.label}
-- Dose Mínima Operacional: ${selectedProductStats.isKg ? '0 kg/ha' : '0.0 t/ha'}
-- Dose Média Recomendada: ${selectedProductStats.avg} ${selectedProductStats.unit}
-- Total Estimado para Aplicação: ${selectedProductStats.total.toLocaleString('pt-BR')} ${selectedProductStats.isKg ? 'kg' : 't'}
+- Dose Mínima Operacional: 0 kg/ha
+- Dose Média Recomendada: ${selectedProductStats.isKg ? selectedProductStats.avg : Math.round(selectedProductStats.avg * 1000)} kg/ha
+- Total Estimado para Aplicação: ${(selectedProductStats.isKg ? selectedProductStats.total : Math.round(selectedProductStats.total * 1000)).toLocaleString('pt-BR')} kg
 - Área Total Aplicada: ${plot.areaHectares} Hectares
 `;
 
                         const prjContent = `GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]`;
-                        const colName = selectedProductStats.isKg ? 'DOSE_KGHA' : 'DOSE_THA';
+                        const colName = 'DOSE_KGHA';
                         let csvContent = `Ponto;Latitude;Longitude;${colName};UNIDADE\n`;
                         
                         const { minLat: boxMinLat, maxLat: boxMaxLat, minLng: boxMinLng, maxLng: boxMaxLng } = spatialBoundingBox;
@@ -1222,13 +1228,18 @@ RESUMO DA RECOMENDAÇÃO DE TAXA VARIÁVEL:
                         const rows = cellDimensions.rows;
                         const gridRes = generateInterpolationGrid(interpPoints, cols, rows, 'exponential', 0.1, 1.0, 300);
 
-                        interface PointRecord {
+                        const dx = (gridRes.xMax - gridRes.xMin) / cols;
+                        const dy = (gridRes.yMax - gridRes.yMin) / rows;
+
+                        interface PolygonRecord {
                           pointNumber: number;
-                          lat: number;
-                          lng: number;
-                          val: number;
+                          latCenter: number;
+                          lngCenter: number;
+                          val: number; // Converted dose in kg/ha
+                          box: { minLng: number; minLat: number; maxLng: number; maxLat: number };
+                          vertices: { lat: number; lng: number }[];
                         }
-                        const listForShp: PointRecord[] = [];
+                        const listForShp: PolygonRecord[] = [];
 
                         const isPointInPolygon = (pt: { lat: number; lng: number }, poly: { lat: number; lng: number }[]): boolean => {
                           let inside = false;
@@ -1245,8 +1256,8 @@ RESUMO DA RECOMENDAÇÃO DE TAXA VARIÁVEL:
                         let ptNum = 1;
                         for (let r = 0; r < rows; r++) {
                           for (let c = 0; c < cols; c++) {
-                            const localX = gridRes.xMin + (c + 0.5) * ((gridRes.xMax - gridRes.xMin) / cols);
-                            const localY = gridRes.yMin + (r + 0.5) * ((gridRes.yMax - gridRes.yMin) / rows);
+                            const localX = gridRes.xMin + (c + 0.5) * dx;
+                            const localY = gridRes.yMin + (r + 0.5) * dy;
                             const gps = metersToLatLng(localX, localY, refLat, refLng);
 
                             let shouldExport = true;
@@ -1255,13 +1266,41 @@ RESUMO DA RECOMENDAÇÃO DE TAXA VARIÁVEL:
                             }
 
                             if (shouldExport) {
-                              const val = Math.max(0, gridRes.data[r][c]);
-                              csvContent += `${ptNum};${gps.lat.toFixed(7)};${gps.lng.toFixed(7)};${val.toFixed(2)};${selectedProductStats.unit.replace('/', '_')}\n`;
+                              const originalVal = Math.max(0, gridRes.data[r][c]);
+                              // Convert to kg/ha if the original unit is not kg (i.e. t/ha)
+                              const valKgHa = selectedProductStats.isKg ? originalVal : originalVal * 1000;
+
+                              csvContent += `${ptNum};${gps.lat.toFixed(7)};${gps.lng.toFixed(7)};${valKgHa.toFixed(2)};kg_ha\n`;
+
+                              // Define the 4 corners of the cell in meters
+                              const xMinCell = gridRes.xMin + c * dx;
+                              const xMaxCell = gridRes.xMin + (c + 1) * dx;
+                              const yMinCell = gridRes.yMin + r * dy;
+                              const yMaxCell = gridRes.yMin + (r + 1) * dy;
+
+                              // Clockwise vertices: Bottom-Left, Top-Left, Top-Right, Bottom-Right, Bottom-Left
+                              const pt1 = metersToLatLng(xMinCell, yMinCell, refLat, refLng);
+                              const pt2 = metersToLatLng(xMinCell, yMaxCell, refLat, refLng);
+                              const pt3 = metersToLatLng(xMaxCell, yMaxCell, refLat, refLng);
+                              const pt4 = metersToLatLng(xMaxCell, yMinCell, refLat, refLng);
+                              const pt5 = { lat: pt1.lat, lng: pt1.lng };
+
+                              const vertices = [pt1, pt2, pt3, pt4, pt5];
+                              const lats = [pt1.lat, pt2.lat, pt3.lat, pt4.lat];
+                              const lons = [pt1.lng, pt2.lng, pt3.lng, pt4.lng];
+
                               listForShp.push({
                                 pointNumber: ptNum,
-                                lat: gps.lat,
-                                lng: gps.lng,
-                                val: val
+                                latCenter: gps.lat,
+                                lngCenter: gps.lng,
+                                val: valKgHa,
+                                box: {
+                                  minLng: Math.min(...lons),
+                                  minLat: Math.min(...lats),
+                                  maxLng: Math.max(...lons),
+                                  maxLat: Math.max(...lats)
+                                },
+                                vertices: vertices
                               });
                               ptNum++;
                             }
@@ -1272,10 +1311,10 @@ RESUMO DA RECOMENDAÇÃO DE TAXA VARIÁVEL:
                         let minLng = Infinity, maxLng = -Infinity;
                         let minLat = Infinity, maxLat = -Infinity;
                         listForShp.forEach((pt) => {
-                          if (pt.lng < minLng) minLng = pt.lng;
-                          if (pt.lng > maxLng) maxLng = pt.lng;
-                          if (pt.lat < minLat) minLat = pt.lat;
-                          if (pt.lat > maxLat) maxLat = pt.lat;
+                          if (pt.box.minLng < minLng) minLng = pt.box.minLng;
+                          if (pt.box.maxLng > maxLng) maxLng = pt.box.maxLng;
+                          if (pt.box.minLat < minLat) minLat = pt.box.minLat;
+                          if (pt.box.maxLat > maxLat) maxLat = pt.box.maxLat;
                         });
                         if (minLng === Infinity) {
                           minLng = maxLng = minLat = maxLat = 0;
@@ -1283,15 +1322,15 @@ RESUMO DA RECOMENDAÇÃO DE TAXA VARIÁVEL:
 
                         const N = listForShp.length;
 
-                        // Create SHP Buffer (Shape Type 1 = Point)
-                        const shpByteLength = 100 + N * 28;
+                        // Create SHP Buffer (Shape Type 5 = Polygon)
+                        const shpByteLength = 100 + N * 136;
                         const shpBuffer = new ArrayBuffer(shpByteLength);
                         const shpView = new DataView(shpBuffer);
 
                         shpView.setInt32(0, 9994, false); // File Code (big endian)
                         shpView.setInt32(24, shpByteLength / 2, false); // File Length in 16-bit words (big endian)
                         shpView.setInt32(28, 1000, true); // Version (little endian)
-                        shpView.setInt32(32, 1, true); // Shape Type: Point (little endian)
+                        shpView.setInt32(32, 5, true); // Shape Type: Polygon = 5 (little endian)
                         
                         shpView.setFloat64(36, minLng, true);
                         shpView.setFloat64(44, minLat, true);
@@ -1301,11 +1340,31 @@ RESUMO DA RECOMENDAÇÃO DE TAXA VARIÁVEL:
                         let shpOffset = 100;
                         listForShp.forEach((pt, idx) => {
                           shpView.setInt32(shpOffset, idx + 1, false); // Record Number
-                          shpView.setInt32(shpOffset + 4, 10, false); // Content length in words (20 bytes = 10 words)
-                          shpView.setInt32(shpOffset + 8, 1, true); // Record Type: Point = 1
-                          shpView.setFloat64(shpOffset + 12, pt.lng, true); // X (Longitude)
-                          shpView.setFloat64(shpOffset + 20, pt.lat, true); // Y (Latitude)
-                          shpOffset += 28;
+                          shpView.setInt32(shpOffset + 4, 64, false); // Content length in words (128 bytes = 64 words)
+                          
+                          // Record Content starts at shpOffset + 8
+                          const contentOffset = shpOffset + 8;
+                          shpView.setInt32(contentOffset, 5, true); // Record Type: Polygon = 5
+
+                          // Box for this record
+                          shpView.setFloat64(contentOffset + 4, pt.box.minLng, true);
+                          shpView.setFloat64(contentOffset + 12, pt.box.minLat, true);
+                          shpView.setFloat64(contentOffset + 20, pt.box.maxLng, true);
+                          shpView.setFloat64(contentOffset + 28, pt.box.maxLat, true);
+
+                          shpView.setInt32(contentOffset + 36, 1, true); // NumParts = 1
+                          shpView.setInt32(contentOffset + 40, 5, true); // NumPoints = 5
+                          shpView.setInt32(contentOffset + 44, 0, true); // Parts[0] = 0 (first index)
+
+                          // Write the 5 vertices
+                          let ptOffset = contentOffset + 48;
+                          pt.vertices.forEach(v => {
+                            shpView.setFloat64(ptOffset, v.lng, true); // X (Longitude)
+                            shpView.setFloat64(ptOffset + 8, v.lat, true); // Y (Latitude)
+                            ptOffset += 16;
+                          });
+
+                          shpOffset += 136;
                         });
 
                         // Create SHX Buffer
@@ -1316,7 +1375,7 @@ RESUMO DA RECOMENDAÇÃO DE TAXA VARIÁVEL:
                         shxView.setInt32(0, 9994, false); // File Code
                         shxView.setInt32(24, shxByteLength / 2, false); // File Length in 16-bit words
                         shxView.setInt32(28, 1000, true); // Version
-                        shxView.setInt32(32, 1, true); // Shape Type: Point
+                        shxView.setInt32(32, 5, true); // Shape Type: Polygon = 5
 
                         shxView.setFloat64(36, minLng, true);
                         shxView.setFloat64(44, minLat, true);
@@ -1325,9 +1384,9 @@ RESUMO DA RECOMENDAÇÃO DE TAXA VARIÁVEL:
 
                         let shxOffset = 100;
                         listForShp.forEach((pt, idx) => {
-                          const wordOffset = (100 + idx * 28) / 2;
+                          const wordOffset = (100 + idx * 136) / 2;
                           shxView.setInt32(shxOffset, wordOffset, false); // Record Offset in words
-                          shxView.setInt32(shxOffset + 4, 10, false); // Record Content Length (10 words)
+                          shxView.setInt32(shxOffset + 4, 64, false); // Record Content Length (64 words)
                           shxOffset += 8;
                         });
 
