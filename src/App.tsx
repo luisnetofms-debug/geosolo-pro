@@ -17,7 +17,7 @@ import {
 import ClientManager from './components/ClientManager';
 import MapContainer from './components/MapContainer';
 import LabResultsManager from './components/LabResultsManager';
-import AIPanel from './components/AIPanel';
+import AIPanel, { calculateAutoRecs } from './components/AIPanel';
 import FertilityAndMaps from './components/FertilityAndMaps';
 import { downloadGISZip } from './utils/fileExporter';
 import { 
@@ -751,7 +751,9 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC] text-slate-800 flex font-sans overflow-x-hidden">
+    <>
+      {/* 1. INTERACTIVE SYSTEM CONTAINER (Hidden completely during Print) */}
+      <div className="min-h-screen bg-[#F8FAFC] text-slate-800 flex font-sans overflow-x-hidden print:hidden">
       
       {/* 1. LEFT NAVIGATION SIDEBAR (Geometric Balance theme) */}
       <aside className="w-64 bg-[#0F172A] flex flex-col border-r border-slate-800 shrink-0 select-none print:hidden hidden lg:flex">
@@ -1104,6 +1106,7 @@ export default function App() {
                   setDesiredV2={handleUpdateDesiredV2}
                   prnt={globalPrnt}
                   setPrnt={handleUpdatePrnt}
+                  activeSoilLayer={activeSoilLayer}
                 />
               ) : null}
             </section>
@@ -1150,5 +1153,258 @@ export default function App() {
 
       </div>
     </div>
+
+    {/* 2. PROFESSIONAL AGRONOMIC REPORT (Visible only on print or print layouts) */}
+    <div className="print-only w-full bg-white text-black p-10 font-sans text-xs">
+      <div className="border-b-2 border-emerald-600 pb-4 mb-6 flex justify-between items-end">
+        <div>
+          <h1 className="text-2xl font-black text-slate-900 tracking-tight">GeoSolo Pro</h1>
+          <p className="text-slate-500 font-medium text-[10px] tracking-wide uppercase font-heading">Laudo Técnico de Recomendação Agronômica</p>
+        </div>
+        <div className="text-right">
+          <p className="text-[9px] text-slate-400 font-mono font-bold">EMISSÃO: {new Date().toLocaleDateString('pt-BR')}</p>
+          <p className="text-[10px] text-emerald-700 font-bold font-mono">CÓDIGO: {activePlot?.id?.substring(0, 8).toUpperCase() || 'PL-GRID'}</p>
+        </div>
+      </div>
+
+      <div className="bg-slate-50 rounded-xl p-4 border border-slate-200 grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div>
+          <span className="text-[8px] font-extrabold uppercase text-slate-400 block tracking-wider">Cliente / Produtor</span>
+          <p className="font-bold text-slate-800">{activeClient?.name || 'Não Identificado'}</p>
+        </div>
+        <div>
+          <span className="text-[8px] font-extrabold uppercase text-slate-400 block tracking-wider">Fazenda</span>
+          <p className="font-bold text-slate-800">{activeFarm?.name || 'Fazenda Principal'}</p>
+          <p className="text-[9px] text-slate-500">{activeFarm?.city} - {activeFarm?.state}</p>
+        </div>
+        <div>
+          <span className="text-[8px] font-extrabold uppercase text-slate-400 block tracking-wider">Talhão</span>
+          <p className="font-bold text-slate-800">{activePlot?.name || 'Talhão Ativo'}</p>
+          <p className="text-[9px] text-slate-500">{activePlot?.areaHectares} Hectares (ha)</p>
+        </div>
+        <div>
+          <span className="text-[8px] font-extrabold uppercase text-slate-400 block tracking-wider">Cultura / Período</span>
+          <p className="font-bold text-slate-800">{activePlot?.cropType || 'Não definida'}</p>
+          <p className="text-[9px] text-emerald-700 font-bold">{activeMonthYear}</p>
+        </div>
+      </div>
+
+      <div className="bg-emerald-50/70 border border-emerald-100 rounded-xl p-4 gap-4 grid grid-cols-3 mb-6 text-emerald-950">
+        <div>
+          <span className="text-[8px] font-extrabold uppercase text-emerald-600 block tracking-wider">Camada de Solo Analisada</span>
+          <p className="text-sm font-black font-mono">{activeSoilLayer}</p>
+        </div>
+        <div>
+          <span className="text-[8px] font-extrabold uppercase text-emerald-600 block tracking-wider font-semibold">PRNT Adotado</span>
+          <p className="text-sm font-black font-mono">{globalPrnt}%</p>
+        </div>
+        <div>
+          <span className="text-[8px] font-extrabold uppercase text-emerald-600 block tracking-wider font-semibold">V₂ Desejado</span>
+          <p className="text-sm font-black font-mono">{globalDesiredV2}%</p>
+        </div>
+      </div>
+
+      <div className="mb-6">
+        <h3 className="font-bold text-xs uppercase tracking-wider text-slate-800 mb-2 border-b border-slate-200 pb-1 font-heading">
+          1. Resultados das Análises Físico-Químicas do Solo
+        </h3>
+        <table className="w-full text-left border-collapse border border-slate-200 text-[10px]">
+          <thead>
+            <tr className="bg-slate-100 text-slate-700 border-b border-slate-200 uppercase tracking-wider text-[8px] font-extrabold">
+              <th className="p-1 px-2 border-r border-slate-200">Ponto</th>
+              <th className="p-1 text-center border-r border-slate-200">pH Ca/H₂O</th>
+              <th className="p-1 text-center border-r border-slate-200">M.O. %</th>
+              <th className="p-1 text-center border-r border-slate-200">P mg/dm³</th>
+              <th className="p-1 text-center border-r border-slate-200">K mmolc</th>
+              <th className="p-1 text-center border-r border-slate-200">Ca mmolc</th>
+              <th className="p-1 text-center border-r border-slate-200">Mg mmolc</th>
+              <th className="p-1 text-center border-r border-slate-200">Al cmolc</th>
+              <th className="p-1 text-center border-r border-slate-200">H+Al cmolc</th>
+              <th className="p-1 text-center border-r border-slate-200">CTC (T)</th>
+              <th className="p-1 text-center border-r border-slate-200">V% Solo</th>
+              <th className="p-1 text-center border-r border-slate-205">Argila %</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-200">
+            {[...activePoints].sort((a,b) => a.pointNumber - b.pointNumber).map((p) => {
+              if (!p.results) {
+                return (
+                  <tr key={`print-ph-${p.id}`}>
+                    <td className="p-1 px-2 font-bold bg-slate-50 border-r border-slate-200">F-{p.pointNumber}</td>
+                    <td colSpan={11} className="p-1 text-center text-slate-400 italic">Dado não disponível para esta camada</td>
+                  </tr>
+                );
+              }
+              const parseNum = (v: any, fallback: number = 0): number => {
+                if (v === undefined || v === null || v === '' || v === 'ns') return fallback;
+                const num = typeof v === 'number' ? v : parseFloat(String(v).replace(',', '.'));
+                return isNaN(num) ? fallback : num;
+              };
+
+              const pH = parseNum(p.results.pH ?? p.results.ph_h2o ?? p.results.ph_cacl2, 5.5);
+              const MO = parseNum(p.results.MO ?? p.results.mo, 0);
+              const Ca = parseNum(p.results.Ca ?? p.results.ca, 0);
+              const Mg = parseNum(p.results.Mg ?? p.results.mg, 0);
+              const K = parseNum(p.results.K ?? p.results.k, 0);
+              const P = parseNum(p.results.P ?? p.results.p_meh ?? p.results.p_res, 0);
+              const Al = parseNum(p.results.Al ?? p.results.al, 0);
+              const hAl = parseNum(p.results.h_al ?? Math.max(0.2, parseFloat((12.0 - 1.8 * pH).toFixed(2))));
+              const T = parseNum(p.results.ctc_t ?? (Ca + Mg + K + hAl));
+              const t = Ca + Mg + K;
+              const v1 = T > 0 ? Math.min(100, (t / T) * 100) : 0;
+              const argila = parseNum(p.results.argila, 0);
+
+              return (
+                <tr key={`print-res-${p.id}`} className="hover:bg-slate-50">
+                  <td className="p-1 px-2 font-bold bg-slate-50 border-r border-slate-200">F-{p.pointNumber}</td>
+                  <td className="p-1 text-center border-r border-slate-200">{pH.toFixed(2)}</td>
+                  <td className="p-1 text-center border-r border-slate-200">{MO.toFixed(1)}</td>
+                  <td className="p-1 text-center border-r border-slate-200">{P.toFixed(1)}</td>
+                  <td className="p-1 text-center border-r border-slate-200">{K.toFixed(2)}</td>
+                  <td className="p-1 text-center border-r border-slate-200">{Ca.toFixed(2)}</td>
+                  <td className="p-1 text-center border-r border-slate-200">{Mg.toFixed(2)}</td>
+                  <td className="p-1 text-center border-r border-slate-200">{Al.toFixed(2)}</td>
+                  <td className="p-1 text-center border-r border-slate-200">{hAl.toFixed(2)}</td>
+                  <td className="p-1 text-center border-r border-slate-200">{T.toFixed(2)}</td>
+                  <td className="p-1 text-center border-r border-slate-200 font-bold text-slate-800">{v1.toFixed(0)}%</td>
+                  <td className="p-1 text-center border-r border-slate-200">{argila > 0 ? `${argila}%` : '-'}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="mb-6 page-break">
+        <h3 className="font-bold text-xs uppercase tracking-wider text-slate-800 mb-2 border-b border-slate-200 pb-1 font-heading">
+          2. Prescrição Técnica e Recomendações Agronômicas Corrigidas
+        </h3>
+        <table className="w-full text-left border-collapse border border-slate-200 text-[10px]">
+          <thead>
+            <tr className="bg-slate-100 text-slate-700 border-b border-slate-200 uppercase tracking-wider text-[8px] font-extrabold">
+              <th className="p-1 px-2 border-r border-slate-200">Ponto</th>
+              <th className="p-1 text-center border-r border-slate-200">C. Dolomítico (t/ha)</th>
+              <th className="p-1 text-center border-r border-slate-200">C. Calcítico (t/ha)</th>
+              <th className="p-1 text-center border-r border-slate-200">Gesso (t/ha)</th>
+              <th className="p-1 text-center border-r border-slate-200">Super MAP (kg/ha)</th>
+              <th className="p-1 text-center border-r border-slate-200">Cloreto KCl (kg/ha)</th>
+              <th className="p-1 text-center border-r border-slate-250">NPK 12-15-15 (kg/ha)</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-200">
+            {[...activePoints].sort((a,b) => a.pointNumber - b.pointNumber).map((p) => {
+              if (!p.results) {
+                return (
+                  <tr key={`print-rec-empty-${p.id}`}>
+                    <td className="p-1 px-2 font-bold bg-slate-50 border-r border-slate-200">F-{p.pointNumber}</td>
+                    <td colSpan={6} className="p-1 text-center text-slate-400 italic">Falta dados físico-químicos</td>
+                  </tr>
+                );
+              }
+              const savedRec = p.recommendations || {};
+              const autoRecs = calculateAutoRecs(p, activePlot?.cropType || '', globalDesiredV2, globalPrnt);
+
+              const dolomitico = savedRec.calcarioDolomitico !== undefined ? savedRec.calcarioDolomitico : (autoRecs.calcarioTipo === 'Dolomítico' ? autoRecs.nc : 0);
+              const calcitico = savedRec.calcarioCalcitico !== undefined ? savedRec.calcarioCalcitico : (autoRecs.calcarioTipo === 'Calcítico' ? autoRecs.nc : 0);
+              const gesso = savedRec.gesso !== undefined ? savedRec.gesso : autoRecs.ng;
+              const mapVal = savedRec.map !== undefined ? savedRec.map : autoRecs.map;
+              const kclVal = savedRec.kcl !== undefined ? savedRec.kcl : autoRecs.kcl;
+              const npkVal = savedRec.formulado12_15_15 !== undefined ? savedRec.formulado12_15_15 : autoRecs.formulado;
+
+              return (
+                <tr key={`print-rec-${p.id}`} className="hover:bg-slate-50">
+                  <td className="p-1 px-2 font-bold bg-slate-50 border-r border-slate-200">F-{p.pointNumber}</td>
+                  <td className="p-1 text-center border-r border-slate-200">{dolomitico > 0 ? `${dolomitico.toFixed(1)} t` : '-'}</td>
+                  <td className="p-1 text-center border-r border-slate-200">{calcitico > 0 ? `${calcitico.toFixed(1)} t` : '-'}</td>
+                  <td className="p-1 text-center border-r border-slate-200">{gesso > 0 ? `${gesso.toFixed(1)} t` : '-'}</td>
+                  <td className="p-1 text-center border-r border-slate-200">{mapVal > 0 ? `${mapVal} kg` : '-'}</td>
+                  <td className="p-1 text-center border-r border-slate-200">{kclVal > 0 ? `${kclVal} kg` : '-'}</td>
+                  <td className="p-1 text-center border-r border-slate-200">{npkVal > 0 ? `${npkVal} kg` : '-'}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {(() => {
+        let dolomiticoSum = 0;
+        let calciticoSum = 0;
+        let gessoSum = 0;
+        let mapSum = 0;
+        let kclSum = 0;
+        let formuladoSum = 0;
+        let count = 0;
+
+        activePoints.forEach(p => {
+          if (!p.results) return;
+          count++;
+          const savedRec = p.recommendations || {};
+          const autoRecs = calculateAutoRecs(p, activePlot?.cropType || '', globalDesiredV2, globalPrnt);
+
+          dolomiticoSum += savedRec.calcarioDolomitico !== undefined ? savedRec.calcarioDolomitico : (autoRecs.calcarioTipo === 'Dolomítico' ? autoRecs.nc : 0);
+          calciticoSum += savedRec.calcarioCalcitico !== undefined ? savedRec.calcarioCalcitico : (autoRecs.calcarioTipo === 'Calcítico' ? autoRecs.nc : 0);
+          gessoSum += savedRec.gesso !== undefined ? savedRec.gesso : autoRecs.ng;
+          mapSum += savedRec.map !== undefined ? savedRec.map : autoRecs.map;
+          kclSum += savedRec.kcl !== undefined ? savedRec.kcl : autoRecs.kcl;
+          formuladoSum += savedRec.formulado12_15_15 !== undefined ? savedRec.formulado12_15_15 : autoRecs.formulado;
+        });
+
+        const area = activePlot?.areaHectares || 1;
+        const avgDolomitico = count > 0 ? dolomiticoSum / count : 0;
+        const avgCalcitico = count > 0 ? calciticoSum / count : 0;
+        const avgGesso = count > 0 ? gessoSum / count : 0;
+        const avgMap = count > 0 ? mapSum / count : 0;
+        const avgKcl = count > 0 ? kclSum / count : 0;
+        const avgFormulado = count > 0 ? formuladoSum / count : 0;
+
+        const totDolomitico = avgDolomitico * area;
+        const totCalcitico = avgCalcitico * area;
+        const totGesso = avgGesso * area;
+        const totMap = avgMap * area;
+        const totKcl = avgKcl * area;
+        const totFormulado = avgFormulado * area;
+
+        return (
+          <div className="mb-10 page-break">
+            <h3 className="font-bold text-xs uppercase tracking-wider text-slate-800 mb-2 border-b border-slate-200 pb-1 font-heading">
+              3. Resumo Executivo e Consolidado de Insumos para o Talhão ({area} ha)
+            </h3>
+            <div className="grid grid-cols-3 gap-3">
+              <div className="bg-slate-50 border border-slate-200 p-3 rounded-lg text-slate-900">
+                <p className="text-[8px] font-black uppercase text-slate-400">Corretivos de Acidez (Calagem)</p>
+                <p className="text-[11px] font-bold mt-1 text-slate-800">Dolomítico: <span className="font-mono text-emerald-800">{totDolomitico.toFixed(1)} t</span> (Média {avgDolomitico.toFixed(1)} t/ha)</p>
+                <p className="text-[11px] font-bold text-slate-800">Calcítico: <span className="font-mono text-emerald-800">{totCalcitico.toFixed(1)} t</span> (Média {avgCalcitico.toFixed(1)} t/ha)</p>
+              </div>
+              <div className="bg-slate-50 border border-slate-200 p-3 rounded-lg text-slate-900">
+                <p className="text-[8px] font-black uppercase text-slate-400">Condicionadores de Subsuperfície</p>
+                <p className="text-[11px] font-bold mt-1 text-slate-800">Gesso Agrícola: <span className="font-mono text-amber-800">{totGesso.toFixed(1)} t</span> (Média {avgGesso.toFixed(1)} t/ha)</p>
+              </div>
+              <div className="bg-slate-50 border border-slate-200 p-3 rounded-lg text-slate-900">
+                <p className="text-[8px] font-black uppercase text-slate-400">Nutrição Especial NPK</p>
+                <p className="text-[11px] font-bold mt-1 text-slate-800">Super MAP: <span className="font-mono text-slate-800">{(totMap/1000).toFixed(2)} t</span> ({Math.round(totMap)} kg)</p>
+                <p className="text-[11px] font-bold text-slate-800">Cloreto KCl: <span className="font-mono text-slate-800">{(totKcl/1000).toFixed(2)} t</span> ({Math.round(totKcl)} kg)</p>
+                <p className="text-[11px] font-bold text-slate-800">NPK 12-15-15: <span className="font-mono text-slate-800">{(totFormulado/1000).toFixed(2)} t</span> ({Math.round(totFormulado)} kg)</p>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      <div className="border-t border-slate-300 pt-8 mt-12 grid grid-cols-2 gap-8">
+        <div>
+          <h4 className="font-bold text-slate-800 uppercase text-[9px] tracking-widest font-heading">Recomendações de Campo</h4>
+          <p className="text-[9px] text-slate-500 leading-relaxed mt-1">
+            Recomenda-se a aplicação em taxa variável dos corretivos de acidez e condicionadores com equipamentos munidos de GPS e piloto automático para obedecer à grade de amostragem georreferenciada. Os defensivos e formulações devem ser dosados conforme orientações técnicas locais vigentes e as exigências estofológicas de cada mancha de fertilidade.
+          </p>
+        </div>
+        <div className="flex flex-col items-center justify-end text-center">
+          <div className="w-48 border-b border-slate-400 mb-1" />
+          <p className="text-[10px] font-bold text-slate-800">Engenheiro Agrônomo Técnico</p>
+          <p className="text-[9px] text-slate-500">CREA PR / Cascavel - PR</p>
+        </div>
+      </div>
+    </div>
+  </>
   );
 }

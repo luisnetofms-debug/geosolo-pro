@@ -435,7 +435,8 @@ export default function FertilityAndMaps({
       if (isLimingTab) {
         value = getProductDose(p, plot.cropType, selectedProduct, v2Desired, prnt);
       } else {
-        value = p.results?.[selectedVariable] ?? 0;
+        const rawVal = p.results?.[selectedVariable];
+        value = typeof rawVal === 'number' ? rawVal : (rawVal && !isNaN(parseFloat(String(rawVal))) ? parseFloat(String(rawVal)) : 0);
       }
       return {
         x: meters.x,
@@ -1702,7 +1703,7 @@ RESUMO DA RECOMENDAÇÃO DE TAXA VARIÁVEL (EM KG/HA):
                 {/* Modal Body */}
                 <div className="p-6 space-y-6">
                   {/* Row 1: Quick info cards */}
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 bg-slate-50 p-4 rounded-xl border border-slate-100">
+                  <div className="grid grid-cols-2 md:grid-cols-5 gap-3 bg-slate-50 p-4 rounded-xl border border-slate-100">
                     <div className="space-y-0.5">
                       <span className="text-[10px] text-slate-400 font-extrabold uppercase tracking-wide flex items-center gap-1"><MapPin className="w-3 h-3 text-emerald-500" /> Coordenadas</span>
                       <p className="font-mono text-xs font-bold text-slate-700">{selectedPoint.lat.toFixed(6)}, {selectedPoint.lng.toFixed(6)}</p>
@@ -1718,6 +1719,10 @@ RESUMO DA RECOMENDAÇÃO DE TAXA VARIÁVEL (EM KG/HA):
                     <div className="space-y-0.5 border-l border-slate-200 pl-3">
                       <span className="text-[10px] text-slate-400 font-extrabold uppercase tracking-wide flex items-center gap-1"><Leaf className="w-3 h-3 text-emerald-500" /> Sementeira</span>
                       <p className="text-xs font-bold text-emerald-700 italic">{plot.cropType || 'Não definida'}</p>
+                    </div>
+                    <div className="space-y-0.5 border-l border-slate-200 pl-3">
+                      <span className="text-[10px] text-slate-400 font-extrabold uppercase tracking-wide flex items-center gap-1"><Layers className="w-3 h-3 text-indigo-500" /> Camada Analisada</span>
+                      <p className="text-xs font-bold text-indigo-700 font-mono">{activeSoilLayer}</p>
                     </div>
                   </div>
 

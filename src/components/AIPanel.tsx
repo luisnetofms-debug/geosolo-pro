@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { jsPDF } from 'jspdf';
 import { Client, Farm, Plot, SamplingPoint, SoilLabResults, FERTILITY_THRESHOLDS } from '../types';
 import { 
   Download, 
@@ -19,7 +20,8 @@ import {
   MapPin,
   Calendar,
   User,
-  ExternalLink
+  ExternalLink,
+  Layers
 } from 'lucide-react';
 
 interface AIPanelProps {
@@ -32,6 +34,7 @@ interface AIPanelProps {
   setDesiredV2?: (v2: number) => void;
   prnt?: number;
   setPrnt?: (prnt: number) => void;
+  activeSoilLayer?: string;
 }
 
 // Helper to calculate automatic agronomic recommendations on the fly point-by-point
@@ -53,14 +56,20 @@ export function calculateAutoRecs(p: SamplingPoint, cropType: string, desiredV2:
     };
   }
 
-  const pH = p.results.pH ?? p.results.ph_h2o ?? p.results.ph_cacl2 ?? 5.5;
-  const Ca = p.results.Ca ?? p.results.ca ?? 0;
-  const Mg = p.results.Mg ?? p.results.mg ?? 0;
-  const K = p.results.K ?? p.results.k ?? 0;
-  const P = p.results.P ?? p.results.p_meh ?? p.results.p_res ?? 0;
+  const parseNum = (v: any, fallback: number = 0): number => {
+    if (v === undefined || v === null || v === '' || v === 'ns') return fallback;
+    const num = typeof v === 'number' ? v : parseFloat(String(v).replace(',', '.'));
+    return isNaN(num) ? fallback : num;
+  };
 
-  const hAl = p.results.h_al ?? Math.max(0.2, parseFloat((12.0 - 1.8 * pH).toFixed(2)));
-  const T = p.results.ctc_t ?? (Ca + Mg + K + hAl);
+  const pH = parseNum(p.results.pH ?? p.results.ph_h2o ?? p.results.ph_cacl2, 5.5);
+  const Ca = parseNum(p.results.Ca ?? p.results.ca, 0);
+  const Mg = parseNum(p.results.Mg ?? p.results.mg, 0);
+  const K = parseNum(p.results.K ?? p.results.k, 0);
+  const P = parseNum(p.results.P ?? p.results.p_meh ?? p.results.p_res, 0);
+
+  const hAl = parseNum(p.results.h_al ?? Math.max(0.2, parseFloat((12.0 - 1.8 * pH).toFixed(2))));
+  const T = parseNum(p.results.ctc_t ?? (Ca + Mg + K + hAl));
   const t = Ca + Mg + K;
   const v1 = T > 0 ? Math.min(100, (t / T) * 100) : 0;
 
@@ -131,6 +140,7 @@ export default function AIPanel({
   setDesiredV2: propSetDesiredV2,
   prnt: propPrnt,
   setPrnt: propSetPrnt,
+  activeSoilLayer = '0-20cm',
 }: AIPanelProps) {
   // Local state for recommendation inputs to allow responsive editing before saving
   const [localPoints, setLocalPoints] = useState<SamplingPoint[]>([]);
@@ -138,9 +148,11 @@ export default function AIPanel({
   const [saveLoading, setSaveLoading] = useState<boolean>(false);
   const [showConfigHelper, setShowConfigHelper] = useState<boolean>(true);
   const [selectedPoint, setSelectedPoint] = useState<SamplingPoint | null>(null);
+  const [showPrintPreview, setShowPrintPreview] = useState<boolean>(false);
 
   const [localDesiredV2, setLocalDesiredV2] = useState<number>(70);
   const [localPrnt, setLocalPrnt] = useState<number>(80);
+  const [showPrintIframeWarning, setShowPrintIframeWarning] = useState<boolean>(false);
 
   const desiredV2 = propDesiredV2 !== undefined ? propDesiredV2 : localDesiredV2;
   const setDesiredV2 = propSetDesiredV2 || setLocalDesiredV2;
@@ -159,6 +171,92 @@ export default function AIPanel({
   }, [localPoints]);
 
   const hasLabResults = pointsWithResults.length > 0;
+
+  const printTotals = useMemo(() => {
+    let dolomiticoSum = 0;
+    let calciticoSum = 0;
+    let gessoSum = 0;
+    let mapSum = 0;
+    let kclSum = 0;
+    let formuladoSum = 0;
+    let count = 0;
+
+    localPoints.forEach(p => {
+      if (!p.results) return;
+      count++;
+      const savedRec = p.recommendations || {};
+      const autoRecs = calculateAutoRecs(p, plot.cropType, desiredV2, prnt);
+
+      dolomiticoSum += savedRec.calcarioDolomitico !== undefined ? savedRec.calcarioDolomitico : (autoRecs.calcarioTipo === 'Dolomítico' ? autoRecs.nc : 0);
+      calciticoSum += savedRec.calcarioCalcitico !== undefined ? savedRec.calcarioCalcitico : (autoRecs.calcarioTipo === 'Calcítico' ? autoRecs.nc : 0);
+      gessoSum += savedRec.gesso !== undefined ? savedRec.gesso : autoRecs.ng;
+      mapSum += savedRec.map !== undefined ? savedRec.map : autoRecs.map;
+      kclSum += savedRec.kcl !== undefined ? savedRec.kcl : autoRecs.kcl;
+      formuladoSum += savedRec.formulado12_15_15 !== undefined ? savedRec.formulado12_15_15 : autoRecs.formulado;
+    });
+
+    const area = plot.areaHectares || 1;
+    const avgDolomitico = count > 0 ? dolomiticoSum / count : 0;
+    const avgCalcitico = count > 0 ? calciticoSum / count : 0;
+    const avgGesso = count > 0 ? gessoSum / count : 0;
+    const avgMap = count > 0 ? mapSum / count : 0;
+    const avgKcl = count > 0 ? kclSum / count : 0;
+    const avgFormulado = count > 0 ? formuladoSum / count : 0;
+
+    return {
+      count,
+      area,
+      avgDolomitico,
+      avgCalcitico,
+      avgGesso,
+      avgMap,
+      avgKcl,
+      avgFormulado,
+      totDolomitico: avgDolomitico * area,
+      totCalcitico: avgCalcitico * area,
+      totGesso: avgGesso * area,
+      totMap: avgMap * area,
+      totKcl: avgKcl * area,
+      totFormulado: avgFormulado * area
+    };
+  }, [localPoints, plot.cropType, desiredV2, prnt, plot.areaHectares]);
+
+  const handleCopyReportText = () => {
+    let text = `LAUDO TÉCNICO DE RECOMENDAÇÃO AGRONÔMICA - GEOSOLO PRO\n`;
+    text += `Cliente: ${client.name}\n`;
+    text += `Fazenda: ${farm.name} (${farm.city} - ${farm.state})\n`;
+    text += `Talhão: ${plot.name} (${plot.areaHectares} ha) - Cultura: ${plot.cropType}\n`;
+    text += `Camada Analisada: ${activeSoilLayer} - PRNT: ${prnt}% - V2: ${desiredV2}%\n\n`;
+    
+    text += `Ponto;Calc. Dolomítico(t/ha);Calc. Calcítico(t/ha);Gesso(t/ha);MAP(kg/ha);KCl(kg/ha);Formulado 12-15-15(kg/ha)\n`;
+    localPoints.sort((a,b) => a.pointNumber - b.pointNumber).forEach(p => {
+      if (!p.results) return;
+      const savedRec = p.recommendations || {};
+      const autoRecs = calculateAutoRecs(p, plot.cropType, desiredV2, prnt);
+      const cd = (savedRec.calcarioDolomitico !== undefined ? savedRec.calcarioDolomitico : (autoRecs.calcarioTipo === 'Dolomítico' ? autoRecs.nc : 0)).toFixed(1);
+      const cc = (savedRec.calcarioCalcitico !== undefined ? savedRec.calcarioCalcitico : (autoRecs.calcarioTipo === 'Calcítico' ? autoRecs.nc : 0)).toFixed(1);
+      const g = (savedRec.gesso !== undefined ? savedRec.gesso : autoRecs.ng).toFixed(1);
+      const mapVal = Math.round(savedRec.map !== undefined ? savedRec.map : autoRecs.map);
+      const kclVal = Math.round(savedRec.kcl !== undefined ? savedRec.kcl : autoRecs.kcl);
+      const form = Math.round(savedRec.formulado12_15_15 !== undefined ? savedRec.formulado12_15_15 : autoRecs.formulado);
+      
+      text += `F-${p.pointNumber};${cd};${cc};${g};${mapVal};${kclVal};${form}\n`;
+    });
+
+    text += `\nCONSOLIDADO DE INSUMOS (Talhão Inteiro):\n`;
+    text += `- Calcário Dolomítico Total: ${printTotals.totDolomitico.toFixed(1)} t (Média: ${printTotals.avgDolomitico.toFixed(1)} t/ha)\n`;
+    text += `- Calcário Calcítico Total: ${printTotals.totCalcitico.toFixed(1)} t (Média: ${printTotals.avgCalcitico.toFixed(1)} t/ha)\n`;
+    text += `- Gesso Agrícola Total: ${printTotals.totGesso.toFixed(1)} t (Média: ${printTotals.avgGesso.toFixed(1)} t/ha)\n`;
+    text += `- Super MAP Total: ${(printTotals.totMap/1000).toFixed(2)} t (${Math.round(printTotals.totMap)} kg)\n`;
+    text += `- Cloreto KCl Total: ${(printTotals.totKcl/1000).toFixed(2)} t (${Math.round(printTotals.totKcl)} kg)\n`;
+    text += `- NPK 12-15-15 Total: ${(printTotals.totFormulado/1000).toFixed(2)} t (${Math.round(printTotals.totFormulado)} kg)\n`;
+
+    navigator.clipboard.writeText(text).then(() => {
+      alert('Resumo do laudo técnico copiado com sucesso para a sua área de transferência!');
+    }).catch(err => {
+      console.warn('Erro ao copiar texto:', err);
+    });
+  };
 
   // Calculates typical agronomic baselines based on soil analysis and selected crop
   const handleApplyAgronomicBaselines = () => {
@@ -394,9 +492,374 @@ export default function AIPanel({
     document.body.removeChild(link);
   };
 
-  // Helper to trigger browser print dialog for nice tabular PDF print
+  // Helper to generate a high-fidelity client-side PDF using jsPDF
   const handlePrintLaudo = () => {
-    window.print();
+    try {
+      const doc = new jsPDF("p", "mm", "a4");
+
+      // Set document details
+      doc.setProperties({
+        title: `Laudo Tecnico ${plot.name}`,
+        subject: 'Recomendação Agronômica - GeoSolo Pro',
+        author: 'GeoSolo Pro',
+        creator: 'GeoSolo Pro'
+      });
+
+      const primaryColor = [5, 150, 105]; // emerald-600
+      const slateDark = [15, 23, 42]; // slate-900
+      const slateMedium = [71, 85, 105]; // slate-600
+      const slateLight = [241, 245, 249]; // slate-100
+      const borderGray = [226, 232, 240]; // slate-200
+
+      let y = 15;
+
+      // Draw brand strip
+      doc.setFillColor(primaryColor[0], primaryColor[1], primaryColor[2]);
+      doc.rect(15, y, 180, 4, 'F');
+      
+      y += 10;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(22);
+      doc.setTextColor(slateDark[0], slateDark[1], slateDark[2]);
+      doc.text("GeoSolo Pro", 15, y);
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(8);
+      doc.setTextColor(slateMedium[0], slateMedium[1], slateMedium[2]);
+      doc.text("LAUDO TÉCNICO DE RECOMENDAÇÃO AGRONÔMICA PONTO A PONTO", 15, y + 5);
+
+      const emitDate = new Date().toLocaleDateString('pt-BR');
+      const docCode = plot.id?.substring(0, 8).toUpperCase() || 'PL-RECS';
+      
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
+      doc.setTextColor(slateMedium[0], slateMedium[1], slateMedium[2]);
+      doc.text(`EMISSÃO: ${emitDate}`, 195, y, { align: 'right' });
+      doc.text(`CÓDIGO: ${docCode}`, 195, y + 5, { align: 'right' });
+
+      // Draw dividing thin line
+      y += 9;
+      doc.setDrawColor(borderGray[0], borderGray[1], borderGray[2]);
+      doc.setLineWidth(0.5);
+      doc.line(15, y, 195, y);
+
+      // Section: Metadata card
+      y += 6;
+      doc.setFillColor(248, 250, 252); // slate-50
+      doc.roundedRect(15, y, 180, 26, 2, 2, 'F');
+      doc.setDrawColor(borderGray[0], borderGray[1], borderGray[2]);
+      doc.roundedRect(15, y, 180, 26, 2, 2, 'S');
+
+      const colX = [18, 63, 108, 153];
+      
+      // Col 1: Cliente / Produtor
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(7);
+      doc.setTextColor(148, 163, 184); // slate-400
+      doc.text("CLIENTE / PRODUTOR", colX[0], y + 6);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(10);
+      doc.setTextColor(slateDark[0], slateDark[1], slateDark[2]);
+      doc.text(client.name.substring(0, 20), colX[0], y + 12);
+      doc.setFont("helvetica", "italic");
+      doc.setFontSize(8);
+      doc.setTextColor(slateMedium[0], slateMedium[1], slateMedium[2]);
+      doc.text(client.email.substring(0, 24), colX[0], y + 18);
+
+      // Col 2: Propriedade / Fazenda
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(7);
+      doc.setTextColor(148, 163, 184); // slate-400
+      doc.text("PROPRIEDADE / FAZENDA", colX[1], y + 6);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(10);
+      doc.setTextColor(slateDark[0], slateDark[1], slateDark[2]);
+      doc.text(farm.name.substring(0, 20), colX[1], y + 12);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8);
+      doc.setTextColor(slateMedium[0], slateMedium[1], slateMedium[2]);
+      doc.text(`${farm.city} - ${farm.state}`, colX[1], y + 18);
+
+      // Col 3: Talhão Analisado
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(7);
+      doc.setTextColor(148, 163, 184); // slate-400
+      doc.text("TALHÃO / ÁREA", colX[2], y + 6);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(10);
+      doc.setTextColor(slateDark[0], slateDark[1], slateDark[2]);
+      doc.text(plot.name.substring(0, 20), colX[2], y + 12);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8);
+      doc.setTextColor(slateMedium[0], slateMedium[1], slateMedium[2]);
+      doc.text(`${plot.areaHectares} ha • ${plot.cropType || 'Não def.'}`, colX[2], y + 18);
+
+      // Col 4: Camada de Solo e Furos
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(7);
+      doc.setTextColor(148, 163, 184); // slate-400
+      doc.text("ATRIBUTOS", colX[3], y + 6);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9);
+      doc.setTextColor(slateDark[0], slateDark[1], slateDark[2]);
+      doc.text(`Layer: ${activeSoilLayer}`, colX[3], y + 12);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8);
+      doc.setTextColor(slateMedium[0], slateMedium[1], slateMedium[2]);
+      doc.text(`Furos: ${printTotals.count} | V2: ${desiredV2}%`, colX[3], y + 18);
+
+      y += 33;
+
+      // Section Title: Tabela Ponto a Ponto
+      doc.setFillColor(primaryColor[0], primaryColor[1], primaryColor[2]);
+      doc.rect(15, y, 2.5, 5, 'F');
+      
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(10);
+      doc.setTextColor(slateDark[0], slateDark[1], slateDark[2]);
+      doc.text("PRESCRIÇÃO DE CORRETIVOS E ADUBOS (PONTO A PONTO)", 19.5, y + 4);
+
+      y += 8;
+
+      const tableHeaders = [
+        "Furo", "Latitude", "Longitude", "Calc. Dol.", "Calc. Calc.", "Gesso", "MAP", "KCl", "NPK"
+      ];
+      const tableUnits = [
+        "", "", "", "(t/ha)", "(t/ha)", "(t/ha)", "(kg/ha)", "(kg/ha)", "(kg/ha)"
+      ];
+
+      doc.setFillColor(241, 245, 249); // slate-100
+      doc.rect(15, y, 180, 8, 'F');
+      doc.setDrawColor(borderGray[0], borderGray[1], borderGray[2]);
+      doc.line(15, y, 195, y);
+      doc.line(15, y + 8, 195, y + 8);
+
+      let curX = 15;
+      const computedColPositions: number[] = [];
+      const colW = [12, 26, 26, 19, 19, 18, 20, 20, 20]; // sums up to 180
+      
+      colW.forEach((w, idx) => {
+        computedColPositions.push(curX);
+        const headerText = tableHeaders[idx];
+        const unitText = tableUnits[idx];
+        const textX = curX + w / 2;
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(7.5);
+        
+        if (idx >= 3) {
+          doc.setTextColor(primaryColor[0], primaryColor[1], primaryColor[2]);
+        } else {
+          doc.setTextColor(slateDark[0], slateDark[1], slateDark[2]);
+        }
+        
+        doc.text(headerText, textX, y + 3.5, { align: 'center' });
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(6.5);
+        doc.setTextColor(148, 163, 184); // slate-400
+        doc.text(unitText, textX, y + 6.8, { align: 'center' });
+        
+        curX += w;
+      });
+
+      y += 8;
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8);
+
+      const sortedPoints = [...localPoints].sort((a,b) => a.pointNumber - b.pointNumber);
+      
+      sortedPoints.forEach((p, lineIdx) => {
+        if (!p.results) return;
+        
+        // Page overflow protection
+        if (y > 270) {
+          doc.addPage();
+          y = 15;
+          doc.setFillColor(primaryColor[0], primaryColor[1], primaryColor[2]);
+          doc.rect(15, y, 180, 2, 'F');
+          y += 6;
+          doc.setFont("helvetica", "bold");
+          doc.setFontSize(8);
+          doc.setTextColor(slateMedium[0], slateMedium[1], slateMedium[2]);
+          doc.text(`Laudo Técnico - Talhão: ${plot.name} (Continuação)`, 15, y);
+          doc.text(`Página ${doc.getNumberOfPages()}`, 195, y, { align: 'right' });
+          y += 6;
+          
+          doc.setFillColor(241, 245, 249);
+          doc.rect(15, y, 180, 8, 'F');
+          doc.setDrawColor(borderGray[0], borderGray[1], borderGray[2]);
+          doc.line(15, y, 195, y);
+          doc.line(15, y + 8, 195, y + 8);
+          
+          let subCurX = 15;
+          colW.forEach((w, idx) => {
+            const headerText = tableHeaders[idx];
+            const unitText = tableUnits[idx];
+            const textX = subCurX + w / 2;
+            doc.setFont("helvetica", "bold");
+            doc.setFontSize(7.5);
+            if (idx >= 3) {
+              doc.setTextColor(primaryColor[0], primaryColor[1], primaryColor[2]);
+            } else {
+              doc.setTextColor(slateDark[0], slateDark[1], slateDark[2]);
+            }
+            doc.text(headerText, textX, y + 3.5, { align: 'center' });
+            doc.setFont("helvetica", "normal");
+            doc.setFontSize(6.5);
+            doc.setTextColor(148, 163, 184);
+            doc.text(unitText, textX, y + 6.8, { align: 'center' });
+            subCurX += w;
+          });
+          y += 8;
+        }
+
+        if (lineIdx % 2 === 1) {
+          doc.setFillColor(248, 250, 252);
+          doc.rect(15, y, 180, 6, 'F');
+        }
+
+        doc.setDrawColor(borderGray[0], borderGray[1], borderGray[2]);
+        doc.setLineWidth(0.3);
+        doc.line(15, y + 6, 195, y + 6);
+
+        const savedRec = p.recommendations || {};
+        const autoRecs = calculateAutoRecs(p, plot.cropType, desiredV2, prnt);
+        const cd = (savedRec.calcarioDolomitico !== undefined ? savedRec.calcarioDolomitico : (autoRecs.calcarioTipo === 'Dolomítico' ? autoRecs.nc : 0));
+        const cc = (savedRec.calcarioCalcitico !== undefined ? savedRec.calcarioCalcitico : (autoRecs.calcarioTipo === 'Calcítico' ? autoRecs.nc : 0));
+        const g = (savedRec.gesso !== undefined ? savedRec.gesso : autoRecs.ng);
+        const mapVal = (savedRec.map !== undefined ? savedRec.map : autoRecs.map);
+        const kclVal = (savedRec.kcl !== undefined ? savedRec.kcl : autoRecs.kcl);
+        const form = (savedRec.formulado12_15_15 !== undefined ? savedRec.formulado12_15_15 : autoRecs.formulado);
+
+        const rowValues = [
+          `F-${p.pointNumber}`,
+          p.lat.toFixed(6),
+          p.lng.toFixed(6),
+          cd > 0 ? `${cd.toFixed(1)} t` : '-',
+          cc > 0 ? `${cc.toFixed(1)} t` : '-',
+          g > 0 ? `${g.toFixed(1)} t` : '-',
+          mapVal > 0 ? `${Math.round(mapVal)} kg` : '-',
+          kclVal > 0 ? `${Math.round(kclVal)} kg` : '-',
+          form > 0 ? `${Math.round(form)} kg` : '-'
+        ];
+
+        rowValues.forEach((val, idx) => {
+          const w = colW[idx];
+          const textX = computedColPositions[idx] + w / 2;
+          doc.setFont("helvetica", idx === 0 ? "bold" : "normal");
+          doc.setTextColor(idx === 0 ? slateDark[0] : slateMedium[0], idx === 0 ? slateDark[1] : slateMedium[1], idx === 0 ? slateDark[2] : slateMedium[2]);
+          doc.setFontSize(idx >= 1 && idx <= 2 ? 7 : 7.5);
+          doc.text(val, textX, y + 4.2, { align: 'center' });
+        });
+
+        y += 6;
+      });
+
+      // Section: Consolidado Geral
+      y += 10;
+      if (y > 200) {
+        doc.addPage();
+        y = 15;
+      }
+
+      doc.setFillColor(primaryColor[0], primaryColor[1], primaryColor[2]);
+      doc.rect(15, y, 2.5, 5, 'F');
+      
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(10);
+      doc.setTextColor(slateDark[0], slateDark[1], slateDark[2]);
+      doc.text("VOLUME TOTAL DE INSUMOS RECOMENDADOS PARA O TALHÃO", 19.5, y + 4);
+
+      y += 8;
+
+      const cardW = 57;
+      const cardH = 16;
+      const gap = 3;
+
+      const totalsData = [
+        { title: "CALCÁRIO DOLOMÍTICO", value: `${printTotals.totDolomitico.toFixed(1)} t`, sub: `Média: ${printTotals.avgDolomitico.toFixed(1)} t/ha` },
+        { title: "CALCÁRIO CALCÍTICO", value: `${printTotals.totCalcitico.toFixed(1)} t`, sub: `Média: ${printTotals.avgCalcitico.toFixed(1)} t/ha` },
+        { title: "GESSO AGRÍCOLA", value: `${printTotals.totGesso.toFixed(1)} t`, sub: `Média: ${printTotals.avgGesso.toFixed(1)} t/ha` },
+        { title: "SUPER MAP (FÓSFORO)", value: `${(printTotals.totMap/1000).toFixed(2)} t`, sub: `${Math.round(printTotals.totMap)} kg total` },
+        { title: "CLORETO KCl (POTÁSSIO)", value: `${(printTotals.totKcl/1000).toFixed(2)} t`, sub: `${Math.round(printTotals.totKcl)} kg total` },
+        { title: "NPK FORMULADO 12-15-15", value: `${(printTotals.totFormulado/1000).toFixed(2)} t`, sub: `${Math.round(printTotals.totFormulado)} kg total` }
+      ];
+
+      totalsData.forEach((card, idx) => {
+        const col = idx % 3;
+        const row = Math.floor(idx / 3);
+        
+        const cardX = 15 + col * (cardW + gap);
+        const cardY = y + row * (cardH + gap);
+
+        doc.setFillColor(248, 250, 252);
+        doc.roundedRect(cardX, cardY, cardW, cardH, 1.5, 1.5, 'F');
+        doc.setDrawColor(borderGray[0], borderGray[1], borderGray[2]);
+        doc.roundedRect(cardX, cardY, cardW, cardH, 1.5, 1.5, 'S');
+
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(6.5);
+        doc.setTextColor(slateMedium[0], slateMedium[1], slateMedium[2]);
+        doc.text(card.title, cardX + 3, cardY + 5.2);
+
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(11);
+        doc.setTextColor(primaryColor[0], primaryColor[1], primaryColor[2]);
+        doc.text(card.value, cardX + 3, cardY + 11);
+
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(6.5);
+        doc.setTextColor(148, 163, 184);
+        doc.text(card.sub, cardX + 3, cardY + 14.2);
+      });
+
+      y += cardH * 2 + gap + 10;
+
+      // Warnings card
+      doc.setFillColor(254, 252, 232); // yellow-50
+      doc.roundedRect(15, y, 180, 16, 1.5, 1.5, 'F');
+      doc.setDrawColor(253, 224, 71); // yellow-300
+      doc.roundedRect(15, y, 180, 16, 1.5, 1.5, 'S');
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(7.5);
+      doc.setTextColor(133, 77, 14); // yellow-800
+      doc.text("OBSERVAÇÕES IMPORTANTES:", 18, y + 4.5);
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(7);
+      doc.setTextColor(113, 63, 18);
+      doc.text(`• Recomendações corporadas por compensação da saturação de bases desejada (V2) de ${desiredV2}%, com corretivos de PRNT médio de ${prnt}%.`, 18, y + 9);
+      doc.text(`• A aplicação física uniforme ou em taxa variável deve ser acompanhada e validada por Engenheiro Agrônomo habilitado.`, 18, y + 13);
+
+      y += 22;
+
+      if (y > 265) {
+        doc.addPage();
+        y = 30;
+      }
+      
+      doc.setDrawColor(slateMedium[0], slateMedium[1], slateMedium[2]);
+      doc.setLineWidth(0.4);
+      doc.line(110, y + 12, 180, y + 12);
+      
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8);
+      doc.setTextColor(slateDark[0], slateDark[1], slateDark[2]);
+      doc.text("GeoSolo Pro Agricultura de Precision", 15, y + 6);
+      doc.text("Sistemas Digitais de Fertilidade Humana", 15, y + 10);
+      
+      doc.text("Responsável Técnico / Engenheiro Agrônomo", 145, y + 16, { align: 'center' });
+      doc.setFontSize(7);
+      doc.setTextColor(148, 163, 184);
+      doc.text("Conselho Regional de Engenharia (CREA)", 145, y + 20, { align: 'center' });
+
+      const filename = `LAUDO_TECNICO_${plot.name.toUpperCase().replace(/\s+/g, '_')}_${farm.name.toUpperCase().replace(/\s+/g, '_')}.pdf`;
+      doc.save(filename);
+    } catch (err) {
+      console.error("PDF generation block occurred:", err);
+      alert("Houve um contratempo ao gerar o PDF. Verifique os dados inseridos.");
+    }
   };
 
   return (
@@ -411,7 +874,7 @@ export default function AIPanel({
             <h3 className="font-semibold text-lg text-slate-800">Prescrição Técnica Comercial Comercializável (Ponto a Ponto)</h3>
           </div>
           <p className="text-slate-500 text-sm mt-1">
-            Planejamento ponto a ponto de produtos específicos (Calcários Calcítico/Dolomítico, Gesso, MAP, KCl e Formulado NPK 12-15-15) associado à malha de amostragem de terra do talhão <strong>{plot.name}</strong>.
+            Planejamento ponto a ponto de produtos específicos (Calcários Calcítico/Dolomítico, Gesso, MAP, KCl e Formulado NPK 12-15-15) associado à malha de amostragem de terra do talhão <strong>{plot.name}</strong> para a camada ativa <strong>{activeSoilLayer}</strong>.
           </p>
         </div>
 
@@ -453,10 +916,10 @@ export default function AIPanel({
 
           <button
             onClick={handlePrintLaudo}
-            className="px-3 py-1.5 bg-white border border-slate-200 hover:border-slate-350 text-emerald-700 hover:text-emerald-800 rounded-lg text-xs font-bold transition-all hover:bg-slate-50 shadow-sm flex items-center gap-1.5 cursor-pointer"
+            className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 hover:border-emerald-300 text-emerald-800 rounded-lg text-xs font-bold transition-all shadow-sm flex items-center gap-1.5 cursor-pointer"
           >
-            <Printer className="w-3.5 h-3.5" />
-            Imprimir Laudo
+            <Printer className="w-3.5 h-3.5 text-emerald-600" />
+            Gerar PDF do Laudo
           </button>
         </div>
       </div>
@@ -1062,7 +1525,7 @@ export default function AIPanel({
                 {/* Modal Body */}
                 <div className="p-6 space-y-6">
                   {/* Row 1: Quick info cards */}
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 bg-slate-50 p-4 rounded-xl border border-slate-100">
+                  <div className="grid grid-cols-2 md:grid-cols-5 gap-3 bg-slate-50 p-4 rounded-xl border border-slate-100">
                     <div className="space-y-0.5">
                       <span className="text-[10px] text-slate-400 font-extrabold uppercase tracking-wide flex items-center gap-1"><MapPin className="w-3 h-3 text-emerald-500" /> Coordenadas</span>
                       <p className="font-mono text-xs font-bold text-slate-700">{selectedPoint.lat.toFixed(6)}, {selectedPoint.lng.toFixed(6)}</p>
@@ -1078,6 +1541,10 @@ export default function AIPanel({
                     <div className="space-y-0.5 border-l border-slate-200 pl-3">
                       <span className="text-[10px] text-slate-400 font-extrabold uppercase tracking-wide flex items-center gap-1"><Leaf className="w-3 h-3 text-emerald-500" /> Sementeira</span>
                       <p className="text-xs font-bold text-emerald-700 italic">{plot.cropType || 'Não definida'}</p>
+                    </div>
+                    <div className="space-y-0.5 border-l border-slate-200 pl-3">
+                      <span className="text-[10px] text-slate-400 font-extrabold uppercase tracking-wide flex items-center gap-1"><Layers className="w-3 h-3 text-indigo-500" /> Camada Analisada</span>
+                      <p className="text-xs font-bold text-indigo-700 font-mono">{activeSoilLayer}</p>
                     </div>
                   </div>
 
@@ -1311,6 +1778,303 @@ export default function AIPanel({
                   >
                     Confirmar e Fechar F-{selectedPoint.pointNumber}
                   </button>
+                </div>
+              </div>
+            </div>
+          )}
+          {/* Iframe Print Permission Warning & Guide Modal */}
+          {showPrintIframeWarning && (
+            <div 
+              className="fixed inset-0 z-55 flex items-center justify-center bg-slate-900/70 backdrop-blur-xs p-4 animate-fade-in"
+              id="iframe-print-warning-modal"
+              onClick={() => setShowPrintIframeWarning(false)}
+            >
+              <div 
+                className="bg-white rounded-2xl max-w-lg w-full shadow-2xl p-6 border border-slate-200 relative space-y-4 text-slate-800"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-start gap-3 text-left">
+                  <span className="p-3 bg-amber-50 text-amber-600 rounded-xl border border-amber-200 shrink-0">
+                    <Printer className="w-6 h-6" />
+                  </span>
+                  <div>
+                    <h4 className="font-extrabold text-slate-900 text-lg">Impressão via AI Studio</h4>
+                    <p className="text-xs text-slate-500 font-semibold mt-0.5">Por que o assistente de impressão não abriu imediatamente?</p>
+                  </div>
+                </div>
+
+                <div className="text-slate-700 text-xs leading-relaxed space-y-3 pt-2 bg-slate-50 p-4 rounded-xl border border-slate-100 text-left">
+                  <p>
+                    O Google AI Studio renderiza o aplicativo de maneira segura dentro de um <strong>iframe isolado (sandboxed)</strong>. Por segurança, os navegadores modernos bloqueiam o comando de impressão (<code className="font-mono bg-slate-200 px-1 py-0.5 rounded text-rose-600">window.print()</code>) iniciado de dentro desse contêiner incorporado.
+                  </p>
+                  <div className="space-y-2 border-t border-slate-200 pt-2.5">
+                    <p className="font-bold text-slate-800">Siga estes simples passos para emitir seu Laudo Técnico em PDF:</p>
+                    <ol className="list-decimal list-inside space-y-1.5 text-slate-600 font-medium pl-1">
+                      <li>Clique no botão <strong>"Abrir em Nova Aba"</strong> (o ícone de link/seta no <strong className="text-slate-800">canto superior direito externo da tela do AI Studio</strong>).</li>
+                      <li>Com o sistema aberto em tela cheia na nova aba, selecione a aba <strong>"Diagnóstico IA"</strong>.</li>
+                      <li>Clique em <strong>"Imprimir Laudo"</strong> no topo superior direito da tabela. O assistente de impressão e salvamento em PDF abrirá perfeitamente!</li>
+                    </ol>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2.5 pt-2">
+                  <button
+                    onClick={() => {
+                      setShowPrintIframeWarning(false);
+                      try {
+                        window.focus();
+                        window.print();
+                      } catch (e) {}
+                    }}
+                    className="flex-1 px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-lg transition-all border border-slate-250 flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    Tentar Novamente Aqui
+                  </button>
+                  <button
+                    onClick={() => setShowPrintIframeWarning(false)}
+                    className="flex-1 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white text-xs font-bold rounded-lg transition-all shadow-sm flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <Check className="w-3.5 h-3.5" /> Compreendi, Fechar
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* GORGEOUS PRINT PREVIEW MODAL */}
+          {showPrintPreview && (
+            <div 
+              className="fixed inset-0 z-50 flex flex-col bg-slate-900/90 backdrop-blur-xs p-4 overflow-y-auto animate-fade-in"
+              id="full-report-print-preview-modal"
+            >
+              {/* Modal control bar at the top */}
+              <div className="max-w-5xl w-full mx-auto bg-slate-800 border border-slate-700 rounded-t-2xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-2xl shrink-0 text-white select-none">
+                <div className="flex items-center gap-3">
+                  <span className="p-2 bg-emerald-600/20 text-emerald-400 rounded-lg border border-emerald-500/30">
+                    <Printer className="w-5 h-5" />
+                  </span>
+                  <div>
+                    <h4 className="font-extrabold text-white text-sm md:text-base leading-tight">Visualizador & Impressão de Laudo Técnico</h4>
+                    <p className="text-[10px] text-slate-400 mt-0.5 font-medium">Layout dimensionado para folhas A4 e salvamento em PDF</p>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={handleCopyReportText}
+                    className="px-3 py-1.5 bg-slate-700 hover:bg-slate-650 text-slate-200 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer border border-slate-650"
+                    title="Copiar dados formatados para enviar ao WhatsApp ou Excel"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    Copiar Dados (Texto)
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      try {
+                        window.focus();
+                        window.print();
+                      } catch (e) {
+                        alert('Seu navegador bloqueou a impressão direta do iframe. Por favor, clique em "Abrir em Nova Aba" no topo direito do AI Studio para exportar normalmente.');
+                      }
+                    }}
+                    className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-extrabold transition-all flex items-center gap-1.5 cursor-pointer shadow-sm shadow-emerald-900/50"
+                  >
+                    <Printer className="w-3.5 h-3.5" />
+                    Imprimir / Salvar PDF
+                  </button>
+
+                  <button
+                    onClick={() => setShowPrintPreview(false)}
+                    className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                    Fechar
+                  </button>
+                </div>
+              </div>
+
+              {/* Dica do Iframe */}
+              <div className="max-w-5xl w-full mx-auto bg-amber-500/10 border-x border-slate-700 border-b border-amber-500/20 p-3.5 flex items-start gap-2 text-slate-300 text-[11px] shrink-0 text-left">
+                <span className="text-amber-400 pt-0.5">💡</span>
+                <p className="leading-normal">
+                  <strong className="text-amber-400">Dica Importante:</strong> O Google AI Studio executa a aplicação dentro de um contêiner isolado (iframe). Para salvar este laudo técnico como <strong className="text-white">PDF</strong> ou imprimir fisicamente com total controle de margens, por favor clique no botão <strong className="text-amber-300">"Abrir em Nova Aba"</strong> (ícone de link/seta no canto superior direito externo da tela do AI Studio) para liberar as funções do navegador.
+                </p>
+              </div>
+
+              {/* The printable document body on screen! Simulated A4 Sheet */}
+              <div className="max-w-5xl w-full mx-auto bg-white text-slate-900 p-6 md:p-10 shadow-2xl rounded-b-2xl mb-8 flex-1 overflow-x-auto min-h-[11in]">
+                <div className="w-full bg-white text-slate-850 text-xs font-sans min-w-[750px]">
+                  
+                  {/* Header */}
+                  <div className="border-b-2 border-emerald-600 pb-4 mb-6 flex justify-between items-end text-left">
+                    <div>
+                      <h1 className="text-2xl font-black text-slate-900 tracking-tight">GeoSolo Pro</h1>
+                      <p className="text-slate-500 font-bold text-[9px] tracking-wide uppercase">Laudo Técnico de Recomendação Agronômica</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-[9px] text-slate-400 font-mono font-bold">EMISSÃO: {new Date().toLocaleDateString('pt-BR')}</p>
+                      <p className="text-[10px] text-emerald-700 font-bold font-mono">CÓDIGO: {plot.id?.substring(0, 8).toUpperCase() || 'PL-RECS'}</p>
+                    </div>
+                  </div>
+
+                  {/* Metadata Cards */}
+                  <div className="bg-slate-50 rounded-xl p-4 border border-slate-200 grid grid-cols-4 gap-4 mb-6 text-left">
+                    <div>
+                      <span className="text-[8px] font-extrabold uppercase text-slate-400 block tracking-wider">Cliente / Produtor</span>
+                      <p className="font-bold text-slate-800 text-[11px] truncate">{client.name}</p>
+                      <p className="text-[9px] text-slate-500 font-mono italic break-all">{client.email}</p>
+                    </div>
+                    <div>
+                      <span className="text-[8px] font-extrabold uppercase text-slate-400 block tracking-wider">Propriedade / Fazenda</span>
+                      <p className="font-bold text-slate-800 text-[11px] truncate">{farm.name}</p>
+                      <p className="text-[9px] text-slate-500">{farm.city} - {farm.state}</p>
+                    </div>
+                    <div>
+                      <span className="text-[8px] font-extrabold uppercase text-slate-400 block tracking-wider">Talhão Analisado</span>
+                      <p className="font-bold text-slate-850 text-[11px] truncate">{plot.name}</p>
+                      <p className="text-[9px] text-slate-500 font-bold">{plot.areaHectares} Hectares • {plot.cropType || 'Não definida'}</p>
+                    </div>
+                    <div>
+                      <span className="text-[8px] font-extrabold uppercase text-slate-400 block tracking-wider">Atributos de Amostragem</span>
+                      <p className="font-bold text-slate-850 text-[11px]">Profundidade: <span className="font-mono text-indigo-700">{activeSoilLayer}</span></p>
+                      <p className="text-[9px] text-slate-500 font-mono">Furos Analisados: {printTotals.count}</p>
+                    </div>
+                  </div>
+
+                  {/* A4 Table of point-by-point recommendations */}
+                  <h3 className="font-extrabold text-slate-850 text-xs mb-2 uppercase tracking-wider flex items-center gap-1.5 text-left">
+                    <span className="w-1.5 h-3.5 bg-emerald-600 rounded-xs"></span>
+                    Prescrição de Insumos Reguladores e Fertilizantes (Ponto a Ponto)
+                  </h3>
+                  
+                  <div className="border border-slate-200 rounded-lg overflow-hidden mb-6 bg-white shadow-xs">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="bg-slate-100 border-b border-slate-200 text-slate-600 text-[9px] font-black uppercase">
+                          <th className="py-2 px-3 text-center border-r border-slate-200 w-12">Furo</th>
+                          <th className="py-2 px-2 border-r border-slate-200">Lat / Lng</th>
+                          <th className="py-2 px-2 border-r border-slate-200 text-center text-amber-700 bg-amber-50/20">Calc. Dolo. <span className="text-[7px] text-slate-400 block lowercase">(t/ha)</span></th>
+                          <th className="py-2 px-2 border-r border-slate-200 text-center text-amber-900 bg-amber-50/40">Calc. Calc. <span className="text-[7px] text-slate-400 block lowercase">(t/ha)</span></th>
+                          <th className="py-2 px-2 border-r border-slate-200 text-center text-orange-700 bg-orange-50/20">Gesso <span className="text-[7px] text-slate-400 block lowercase">(t/ha)</span></th>
+                          <th className="py-2 px-2 border-r border-slate-200 text-center text-emerald-800 bg-emerald-50/20">MAP <span className="text-[7px] text-slate-400 block lowercase">(kg/ha)</span></th>
+                          <th className="py-2 px-2 border-r border-slate-200 text-center text-teal-800 bg-teal-50/20 font-bold">KCl <span className="text-[7px] text-slate-400 block lowercase">(kg/ha)</span></th>
+                          <th className="py-2 px-2 text-center text-blue-900 bg-blue-50/20 font-bold">Formulado 12-15-15 <span className="text-[7px] text-slate-400 block lowercase">(kg/ha)</span></th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-150">
+                        {localPoints.sort((a,b) => a.pointNumber - b.pointNumber).map((p) => {
+                          if (!p.results) return null;
+                          const savedRec = p.recommendations || {};
+                          const autoRecs = calculateAutoRecs(p, plot.cropType, desiredV2, prnt);
+
+                          const cd = (savedRec.calcarioDolomitico !== undefined ? savedRec.calcarioDolomitico : (autoRecs.calcarioTipo === 'Dolomítico' ? autoRecs.nc : 0));
+                          const cc = (savedRec.calcarioCalcitico !== undefined ? savedRec.calcarioCalcitico : (autoRecs.calcarioTipo === 'Calcítico' ? autoRecs.nc : 0));
+                          const g = (savedRec.gesso !== undefined ? savedRec.gesso : autoRecs.ng);
+                          const mapVal = (savedRec.map !== undefined ? savedRec.map : autoRecs.map);
+                          const kclVal = (savedRec.kcl !== undefined ? savedRec.kcl : autoRecs.kcl);
+                          const form = (savedRec.formulado12_15_15 !== undefined ? savedRec.formulado12_15_15 : autoRecs.formulado);
+
+                          return (
+                            <tr key={p.id} className="text-[9px] hover:bg-slate-50 font-medium text-slate-700">
+                              <td className="py-1.5 px-3 text-center font-bold border-r border-slate-200 bg-slate-50 text-slate-900">F-{p.pointNumber}</td>
+                              <td className="py-1.5 px-2 border-r border-slate-200 font-mono text-slate-400 select-all">{p.lat.toFixed(6)}, {p.lng.toFixed(6)}</td>
+                              <td className="py-1.5 px-2 border-r border-slate-200 text-center font-bold text-slate-800">{cd > 0 ? `${cd.toFixed(1)} t` : '-'}</td>
+                              <td className="py-1.5 px-2 border-r border-slate-200 text-center font-bold text-slate-850">{cc > 0 ? `${cc.toFixed(1)} t` : '-'}</td>
+                              <td className="py-1.5 px-2 border-r border-slate-200 text-center font-mono font-bold text-amber-900">{g > 0 ? `${g.toFixed(1)} t` : '-'}</td>
+                              <td className="py-1.5 px-2 border-r border-slate-200 text-center font-bold text-emerald-800">{mapVal > 0 ? `${Math.round(mapVal)} kg` : '-'}</td>
+                              <td className="py-1.5 px-2 border-r border-slate-200 text-center font-bold text-teal-850">{kclVal > 0 ? `${Math.round(kclVal)} kg` : '-'}</td>
+                              <td className="py-1.5 px-2 text-center font-black text-blue-900">{form > 0 ? `${Math.round(form)} kg` : '-'}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Consolidado Global de Insumos */}
+                  <h3 className="font-extrabold text-slate-850 text-xs mb-2 uppercase tracking-wider flex items-center gap-1.5 text-left">
+                    <span className="w-1.5 h-3.5 bg-emerald-600 rounded-xs"></span>
+                    Volume Consolidado de Insumos (Necessidade Total do Talhão)
+                  </h3>
+
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-6">
+                    {/* Dolomitico Card */}
+                    <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-left">
+                      <span className="text-[8px] font-black text-amber-850 uppercase block tracking-wider">Calcário Dolomítico</span>
+                      <p className="text-lg font-black text-slate-900 tracking-tight leading-none mt-1">
+                        {printTotals.totDolomitico.toFixed(1)} <span className="text-xs font-bold text-slate-500">t</span>
+                      </p>
+                      <span className="text-[9px] text-slate-400 block mt-1">Dose média: {printTotals.avgDolomitico.toFixed(1)} t/ha</span>
+                    </div>
+
+                    {/* Calcitico Card */}
+                    <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-left">
+                      <span className="text-[8px] font-black text-slate-700 uppercase block tracking-wider">Calcário Calcítico</span>
+                      <p className="text-lg font-black text-slate-900 tracking-tight leading-none mt-1">
+                        {printTotals.totCalcitico.toFixed(1)} <span className="text-xs font-bold text-slate-500">t</span>
+                      </p>
+                      <span className="text-[9px] text-slate-400 block mt-1">Dose média: {printTotals.avgCalcitico.toFixed(1)} t/ha</span>
+                    </div>
+
+                    {/* Gesso Card */}
+                    <div className="bg-slate-55 border border-slate-200 rounded-xl p-3 text-left">
+                      <span className="text-[8px] font-black text-amber-900 uppercase block tracking-wider">Gesso Agrícola (Sulfato Ca/S)</span>
+                      <p className="text-lg font-black text-slate-950 tracking-tight leading-none mt-1">
+                        {printTotals.totGesso.toFixed(1)} <span className="text-xs font-bold text-slate-500">t</span>
+                      </p>
+                      <span className="text-[9px] text-slate-400 block mt-1">Dose média: {printTotals.avgGesso.toFixed(1)} t/ha</span>
+                    </div>
+
+                    {/* MAP Card */}
+                    <div className="bg-emerald-50/20 border border-emerald-100 rounded-xl p-3 text-left">
+                      <span className="text-[8px] font-black text-emerald-800 uppercase block tracking-wider">Super MAP (Fósforo)</span>
+                      <p className="text-lg font-black text-emerald-950 tracking-tight leading-none mt-1">
+                        {(printTotals.totMap/1000).toFixed(2)} <span className="text-xs font-bold text-slate-500">t</span>
+                      </p>
+                      <span className="text-[9px] text-slate-500 block mt-1">Total: {Math.round(printTotals.totMap)} kg</span>
+                    </div>
+
+                    {/* KCl Card */}
+                    <div className="bg-teal-50/25 border border-teal-100 rounded-xl p-3 text-left">
+                      <span className="text-[8px] font-black text-teal-800 uppercase block tracking-wider">Cloreto KCl (Potássio)</span>
+                      <p className="text-lg font-black text-teal-950 tracking-tight leading-none mt-1">
+                        {(printTotals.totKcl/1000).toFixed(2)} <span className="text-xs font-bold text-slate-500">t</span>
+                      </p>
+                      <span className="text-[9px] text-slate-500 block mt-1">Total: {Math.round(printTotals.totKcl)} kg</span>
+                    </div>
+
+                    {/* Formulado Card */}
+                    <div className="bg-blue-50/20 border border-blue-100 rounded-xl p-3 text-left">
+                      <span className="text-[8px] font-black text-blue-900 uppercase block tracking-wider">NPK Formulado 12-15-15</span>
+                      <p className="text-lg font-black text-blue-950 tracking-tight leading-none mt-1">
+                        {(printTotals.totFormulado/1000).toFixed(2)} <span className="text-xs font-bold text-slate-500">t</span>
+                      </p>
+                      <span className="text-[9px] text-slate-500 block mt-1">Total: {Math.round(printTotals.totFormulado)} kg</span>
+                    </div>
+                  </div>
+
+                  {/* Notas de validação */}
+                  <div className="border border-slate-200 bg-slate-50 rounded-xl p-4 text-slate-600 text-[10px] space-y-2 text-left mb-6 leading-relaxed">
+                    <p className="font-bold text-slate-800 uppercase text-[9px] tracking-wider">Observações Legais e Agronômicas Relevantes:</p>
+                    <ul className="list-disc pl-4 space-y-1 text-slate-500">
+                      <li>As doses prescritas baseiam-se na compensação da saturação de bases desejada (<span className="font-bold text-slate-800">V₂ = {desiredV2}%</span>) com PRNT padrão de <span className="font-bold text-slate-800">{prnt}%</span> e profundidade analisada de <span className="font-bold text-indigo-700">{activeSoilLayer}</span>.</li>
+                      <li>A recomendação de corretivos e fertilizantes visa manter e suprir os níveis críticos ideais para a cultura de <span className="font-extrabold text-emerald-800 italic">{plot.cropType || 'Não definida'}</span> baseada em recomendações oficiais regionais.</li>
+                    </ul>
+                  </div>
+
+                  {/* Assinatura do Engenheiro Agrônomo responsável */}
+                  <div className="pt-8 border-t border-slate-200 flex justify-between items-center text-[10px] text-slate-500 text-left">
+                    <div>
+                      <p className="font-bold text-slate-800">GeoSolo Pro Agricultura de Precisão</p>
+                      <p>Sistemas de Alta Precisão Agronômica</p>
+                    </div>
+                    <div className="text-center w-64 border-t border-slate-400 pt-1 mt-6">
+                      <p className="font-bold text-slate-800">Assinatura do Responsável Técnico</p>
+                      <p className="text-[9px] text-slate-400">CREA / Engenheiro Agrônomo</p>
+                    </div>
+                  </div>
+
                 </div>
               </div>
             </div>

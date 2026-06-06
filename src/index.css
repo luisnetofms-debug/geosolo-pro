@@ -32,3 +32,60 @@
   background: #94a3b8;
 }
 
+@media print {
+  html, body, #root {
+    width: 100% !important;
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+    background: white !important;
+    color: black !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+  
+  .min-h-screen {
+    display: none !important;
+  }
+
+  main {
+    overflow: visible !important;
+    height: auto !important;
+    max-height: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    display: none !important;
+  }
+
+  .print\:hidden {
+    display: none !important;
+  }
+  
+  .print\:block {
+    display: block !important;
+  }
+
+  .print-only {
+    display: block !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  .page-break {
+    page-break-before: always;
+    break-before: page;
+  }
+}
+
+/* Extra robust utility to manage page display states specifically during standard printing */
+.print-only {
+  display: none !important;
+}
+
+@media print {
+  .print-only {
+    display: block !important;
+  }
+}
+
