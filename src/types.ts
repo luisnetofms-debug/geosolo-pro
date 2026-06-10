@@ -92,6 +92,7 @@ export interface SamplingPoint {
   collectedBy?: string;
   results?: SoilLabResults;
   subsamples?: Subsample[];
+  zone?: string; // Nome ou ID da Zona de Manejo (ex: "Zona Alta", "Zona Baixa")
   recommendations?: {
     calagem?: number;      // t/ha
     gessagem?: number;     // t/ha

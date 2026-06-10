@@ -101,6 +101,7 @@ export default function FertilityAndMaps({
   const [limingManualDoses, setLimingManualDoses] = useState<Record<string, number>>({});
   const [selectedProduct, setSelectedProduct] = useState<'calcarioDolomitico' | 'calcarioCalcitico' | 'gesso' | 'map' | 'kcl' | 'formulado12_15_15' | 'calagem'>('calcarioDolomitico');
   const [selectedPoint, setSelectedPoint] = useState<SamplingPoint | null>(null);
+  const [mapSource, setMapSource] = useState<'kriging' | 'zonas'>('kriging');
 
   const v2Desired = propDesiredV2 !== undefined ? propDesiredV2 : localDesiredV2;
   const setV2Desired = propSetDesiredV2 || setLocalDesiredV2;
@@ -445,6 +446,42 @@ export default function FertilityAndMaps({
       };
     });
 
+    // Group active points by management zones and calculate average values
+    const zonesList = ['Zona de Alta', 'Zona de Média', 'Zona de Baixa'];
+    const zoneAverages: Record<string, number> = {};
+    zonesList.forEach(zName => {
+      const ptsInZone = activePointsData.filter(p => p.zone === zName);
+      if (ptsInZone.length > 0) {
+        let sum = 0;
+        ptsInZone.forEach(p => {
+          let value = 0;
+          if (isLimingTab) {
+            value = getProductDose(p, plot.cropType, selectedProduct, v2Desired, prnt);
+          } else {
+            const rawVal = p.results?.[selectedVariable];
+            value = typeof rawVal === 'number' ? rawVal : (rawVal && !isNaN(parseFloat(String(rawVal))) ? parseFloat(String(rawVal)) : 0);
+          }
+          sum += value;
+        });
+        zoneAverages[zName] = sum / ptsInZone.length;
+      } else {
+        zoneAverages[zName] = 0;
+      }
+    });
+
+    let overallSum = 0;
+    activePointsData.forEach(p => {
+      let value = 0;
+      if (isLimingTab) {
+        value = getProductDose(p, plot.cropType, selectedProduct, v2Desired, prnt);
+      } else {
+        const rawVal = p.results?.[selectedVariable];
+        value = typeof rawVal === 'number' ? rawVal : (rawVal && !isNaN(parseFloat(String(rawVal))) ? parseFloat(String(rawVal)) : 0);
+      }
+      overallSum += value;
+    });
+    zoneAverages['Sem Zona'] = activePointsData.length > 0 ? (overallSum / activePointsData.length) : 0;
+
     // Generate interpolated dense grid matrix based on configured cell resolution
     const cols = cellDimensions.cols;
     const rows = cellDimensions.rows;
@@ -498,7 +535,24 @@ export default function FertilityAndMaps({
         const gps = metersToLatLng(localX, localY, refLat, refLng);
         const { x, y } = getCanvasXY(gps.lat, gps.lng);
 
-        const val = gridRes.data[r][c];
+        let val = 0;
+        if (mapSource === 'zonas') {
+          // Find closest sampling point to cell center to determine its zone
+          let bestPt = null;
+          let minDistance = Infinity;
+          points.forEach(p => {
+            const dist = Math.sqrt((p.lat - gps.lat) ** 2 + (p.lng - gps.lng) ** 2);
+            if (dist < minDistance) {
+              minDistance = dist;
+              bestPt = p;
+            }
+          });
+          const zoneKey = (bestPt && (bestPt as SamplingPoint).zone) || 'Sem Zona';
+          val = zoneAverages[zoneKey] ?? zoneAverages['Sem Zona'] ?? 0;
+        } else {
+          val = gridRes.data[r][c];
+        }
+
         const color = isLimingTab ? getProductColor(val) : getFertilityColor(val, selectedVariable);
 
         ctx.fillStyle = color;
@@ -531,7 +585,7 @@ export default function FertilityAndMaps({
       ctx.setLineDash([]);
       ctx.stroke();
     }
-  }, [activeTab, pointsWithResults, pointsWithLiming, selectedVariable, selectedProduct, plot.boundaryPoints, spatialBoundingBox, cellDimensions]);
+  }, [activeTab, pointsWithResults, pointsWithLiming, selectedVariable, selectedProduct, plot.boundaryPoints, spatialBoundingBox, cellDimensions, mapSource]);
 
   return (
     <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-6 space-y-6" id="fertility-maps-tab">
@@ -905,6 +959,36 @@ export default function FertilityAndMaps({
                     );
                   })}
                 </div>
+
+                {/* Zone averages summary card */}
+                {mapSource === 'zonas' && (
+                  <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl space-y-2.5">
+                    <span className="text-[10px] font-extrabold text-emerald-800 uppercase block tracking-wider">Média de Fertilidade por Zona</span>
+                    <div className="space-y-1.5 text-[11px]">
+                      {['Zona de Alta', 'Zona de Média', 'Zona de Baixa'].map(z => {
+                        const pts = pointsWithResults.filter(p => p.zone === z);
+                        let sum = 0;
+                        pts.forEach(p => {
+                          const rawVal = p.results?.[selectedVariable];
+                          sum += typeof rawVal === 'number' ? rawVal : 0;
+                        });
+                        const avgVal = pts.length > 0 ? (sum / pts.length).toFixed(1) : '-';
+                        
+                        const colorClass = z === 'Zona de Alta' ? 'text-emerald-700 font-bold' : z === 'Zona de Média' ? 'text-amber-700 font-bold' : 'text-rose-700 font-bold';
+                        
+                        return (
+                          <div key={z} className="flex justify-between items-center bg-white px-2.5 py-1.5 rounded-lg border border-emerald-100/60 shadow-2xs">
+                            <span className={colorClass}>{z}</span>
+                            <span className="font-mono font-bold text-slate-800">{avgVal} {FERTILITY_THRESHOLDS[selectedVariable]?.unit}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <p className="text-[9px] text-slate-400 leading-tight">
+                      Calculado a partir dos resultados dos furos reais que pertencem a cada zona.
+                    </p>
+                  </div>
+                )}
               </div>
 
               {/* Dynamic Coordinate ScatterPlot Field Grid */}
@@ -912,10 +996,40 @@ export default function FertilityAndMaps({
                 <div className="absolute inset-0 bg-[radial-gradient(#e2e8f0_1px,transparent_1px)] [background-size:16px_16px] pointer-events-none opacity-40" />
                 
                 {/* Visual Title Header inside the Map area */}
-                <div className="relative z-10 flex items-center justify-between border-b border-slate-100 pb-3 mb-2">
+                <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between border-b border-slate-100 pb-3 mb-2 gap-3">
                   <div className="text-xs">
-                    <span className="font-extrabold text-slate-800 uppercase block">Distribuição Espacial Bidimensional (Krigagem)</span>
-                    <p className="text-[10px] text-slate-400 leading-none">Interpolação contínua e limites reais do talhão</p>
+                    <span className="font-extrabold text-slate-800 uppercase block">
+                      {mapSource === 'zonas' ? 'Distribuição Espacial por Zonas de Manejo (MZ)' : 'Distribuição Espacial por Interpolação (Krigagem)'}
+                    </span>
+                    <p className="text-[10px] text-slate-400 leading-none mt-0.5">
+                      {mapSource === 'zonas' ? 'Cálculo de médias isoladas por zona e limites do talhão' : 'Interpolação contínua de malha fina e limites do talhão'}
+                    </p>
+                  </div>
+
+                  {/* Toggle Mode Segmented Control */}
+                  <div className="inline-flex bg-slate-100 p-0.5 rounded-lg border border-slate-200 self-start md:self-auto">
+                    <button
+                      type="button"
+                      onClick={() => setMapSource('kriging')}
+                      className={`px-3 py-1.5 text-[10px] font-bold rounded-md transition-all cursor-pointer ${
+                        mapSource === 'kriging'
+                          ? 'bg-white text-indigo-700 shadow-sm font-extrabold'
+                          : 'text-slate-500 hover:text-slate-800'
+                      }`}
+                    >
+                      Interpolação (Krigagem)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setMapSource('zonas')}
+                      className={`px-3 py-1.5 text-[10px] font-bold rounded-md transition-all cursor-pointer ${
+                        mapSource === 'zonas'
+                          ? 'bg-white text-emerald-700 shadow-sm font-extrabold'
+                          : 'text-slate-500 hover:text-slate-800'
+                      }`}
+                    >
+                      Zonas de Manejo (MZ)
+                    </button>
                   </div>
                   
                   {/* Legend indicator of marker weights */}
@@ -1254,6 +1368,28 @@ RESUMO DA RECOMENDAÇÃO DE TAXA VARIÁVEL (EM KG/HA):
                           return inside;
                         };
 
+                        // Calculate zone averages for export if zones mode is selected
+                        const activeZones = ['Zona de Alta', 'Zona de Média', 'Zona de Baixa'];
+                        const exportZoneAverages: Record<string, number> = {};
+                        activeZones.forEach(zName => {
+                          const ptsInZone = pointsWithLiming.filter(p => p.zone === zName);
+                          if (ptsInZone.length > 0) {
+                            let sum = 0;
+                            ptsInZone.forEach(p => {
+                              sum += getProductDose(p, plot.cropType, selectedProduct, v2Desired, prnt);
+                            });
+                            exportZoneAverages[zName] = sum / ptsInZone.length;
+                          } else {
+                            exportZoneAverages[zName] = 0;
+                          }
+                        });
+
+                        let exportOverallSum = 0;
+                        pointsWithLiming.forEach(p => {
+                          exportOverallSum += getProductDose(p, plot.cropType, selectedProduct, v2Desired, prnt);
+                        });
+                        exportZoneAverages['Sem Zona'] = pointsWithLiming.length > 0 ? (exportOverallSum / pointsWithLiming.length) : 0;
+
                         let ptNum = 1;
                         for (let r = 0; r < rows; r++) {
                           for (let c = 0; c < cols; c++) {
@@ -1267,7 +1403,23 @@ RESUMO DA RECOMENDAÇÃO DE TAXA VARIÁVEL (EM KG/HA):
                             }
 
                             if (shouldExport) {
-                              const originalVal = Math.max(0, gridRes.data[r][c]);
+                              let originalVal = 0;
+                              if (mapSource === 'zonas') {
+                                let bestPt = null;
+                                let minDistance = Infinity;
+                                points.forEach(p => {
+                                  const dist = Math.sqrt((p.lat - gps.lat) ** 2 + (p.lng - gps.lng) ** 2);
+                                  if (dist < minDistance) {
+                                    minDistance = dist;
+                                    bestPt = p;
+                                  }
+                                });
+                                const zoneKey = (bestPt && (bestPt as SamplingPoint).zone) || 'Sem Zona';
+                                originalVal = Math.max(0, exportZoneAverages[zoneKey] ?? exportZoneAverages['Sem Zona'] ?? 0);
+                              } else {
+                                originalVal = Math.max(0, gridRes.data[r][c]);
+                              }
+
                               // Convert to kg/ha if the original unit is not kg (i.e. t/ha)
                               const valKgHa = selectedProductStats.isKg ? originalVal : originalVal * 1000;
 
@@ -1471,19 +1623,79 @@ RESUMO DA RECOMENDAÇÃO DE TAXA VARIÁVEL (EM KG/HA):
                       <Download className="w-4 h-4" />
                       Gerar SHP/CSV Topper 5500
                     </button>
+
+                    {/* Zone averages product prescription card */}
+                    {mapSource === 'zonas' && (
+                      <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl space-y-2.5 mt-3 text-left">
+                        <span className="text-[10px] font-extrabold text-emerald-800 uppercase block tracking-wider">Recomendação Média por Zona</span>
+                        <div className="space-y-1.5 text-[11px]">
+                          {['Zona de Alta', 'Zona de Média', 'Zona de Baixa'].map(z => {
+                            const pts = pointsWithLiming.filter(p => p.zone === z);
+                            let sum = 0;
+                            pts.forEach(p => {
+                              sum += getProductDose(p, plot.cropType, selectedProduct, v2Desired, prnt);
+                            });
+                            const avgVal = pts.length > 0 ? (sum / pts.length).toFixed(selectedProductStats.isKg ? 0 : 2) : '-';
+                            
+                            const colorClass = z === 'Zona de Alta' ? 'text-emerald-700 font-bold' : z === 'Zona de Média' ? 'text-amber-700 font-bold' : 'text-rose-700 font-bold';
+                            
+                            return (
+                              <div key={z} className="flex justify-between items-center bg-white px-2.5 py-1.5 rounded-lg border border-emerald-100/60 shadow-2xs">
+                                <span className={colorClass}>{z}</span>
+                                <span className="font-mono font-bold text-slate-800">
+                                  {avgVal} {selectedProductStats.unit}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <p className="text-[9px] text-slate-400 leading-tight">
+                          Gera a recomendação calibrada real calculando furos reais pertencentes à zona para projetar uma dose média setorial estável.
+                        </p>
+                      </div>
+                    )}
                   </div>
                 <div className="lg:col-span-3 border border-slate-200 rounded-xl p-5 bg-white flex flex-col justify-between min-h-[460px] relative overflow-hidden">
                   <div className="absolute inset-0 bg-[radial-gradient(#e2e8f0_1px,transparent_1px)] [background-size:16px_16px] pointer-events-none opacity-45" />
 
                   {/* Top Statistics Line */}
-                  <div className="relative z-10 flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-100 pb-3 mb-3 gap-3">
+                  <div className="relative z-10 flex flex-col xl:flex-row xl:items-center justify-between border-b border-slate-100 pb-3 mb-3 gap-3">
                     <div className="text-xs">
                       <span className="font-extrabold text-slate-800 uppercase block">
-                        Mapa Interativo: {selectedProductStats.label} (Taxa Variável)
+                        Mapa Interativo: {selectedProductStats.label} {mapSource === 'zonas' ? '(Delineamento por Zonas)' : '(Taxa Variável Krigagem)'}
                       </span>
                       <p className="text-[10px] text-slate-400 leading-none mt-1">
-                        Interpolação de krigagem ordinária {userCellSizeM}x{userCellSizeM}m baseada nas calibrações comerciais ponto a ponto
+                        {mapSource === 'zonas'
+                          ? `Grade por Zonas de Manejo ${userCellSizeM}x${userCellSizeM}m baseada na média das recomendações comerciais da zona`
+                          : `Interpolação de krigagem ordinária ${userCellSizeM}x${userCellSizeM}m baseada nas calibrações comerciais ponto a ponto`
+                        }
                       </p>
+                    </div>
+
+                    {/* Toggle Mode Segmented Control */}
+                    <div className="inline-flex bg-slate-100 p-0.5 rounded-lg border border-slate-200 self-start xl:self-auto">
+                      <button
+                        type="button"
+                        onClick={() => setMapSource('kriging')}
+                        className={`px-3 py-1.5 text-[10px] font-bold rounded-md transition-all cursor-pointer ${
+                          mapSource === 'kriging'
+                            ? 'bg-white text-indigo-700 shadow-sm font-extrabold'
+                            : 'text-slate-500 hover:text-slate-800'
+                        }`}
+                      >
+                        Interpolação (Krigagem)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setMapSource('zonas')}
+                        className={`px-3 py-1.5 text-[10px] font-bold rounded-md transition-all cursor-pointer ${
+                          mapSource === 'zonas'
+                            ? 'bg-white text-emerald-700 shadow-sm font-extrabold'
+                            : 'text-slate-500 hover:text-slate-800'
+                        }`}
+                      >
+                        Zonas de Manejo (MZ)
+                      </button>
                     </div>
 
                     {/* Dynamic Product Badges */}

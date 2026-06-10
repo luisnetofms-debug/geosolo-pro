@@ -48,10 +48,112 @@ export default function MapContainer({
   const tileLayerRef = useRef<L.TileLayer | null>(null);
 
   // States
-  const [activeTab, setActiveTab] = useState<'coleta' | 'interpolacao'>('coleta');
+  const [activeTab, setActiveTab] = useState<'coleta' | 'interpolacao' | 'zonas'>('coleta');
   const [activeVariable, setActiveVariable] = useState<keyof SoilLabResults>('pH');
   const [interpolationOpacity, setInterpolationOpacity] = useState<number>(0.75);
   const [gridSpacing, setGridSpacing] = useState<number>(120); // Spacing in meters for automated grids
+
+  // Management Zones States
+  const [activeZoneVariable, setActiveZoneVariable] = useState<keyof SoilLabResults>('argila');
+  const [selectedPainterZone, setSelectedPainterZone] = useState<string>('Zona de Alta');
+  const [painterModeActive, setPainterModeActive] = useState<boolean>(false);
+
+  // Auto-generate zones function using chemical value quantiles
+  const handleAutoGenerateZones = () => {
+    const pointsWithResults = points.filter(p => p.results);
+    if (pointsWithResults.length === 0) {
+      alert("Não há dados de laboratório suficientes cadastrados para gerar zonas de manejo químicas. Experimente o botão 'Demo Espacial' para ver as zonas geográficas funcionando no mapa, ou digite nos furos pela tabela de laudos.");
+      return;
+    }
+
+    // Sort based on selected chemical base variable values
+    const sortedPoints = [...points].sort((a, b) => {
+      const getVal = (p: SamplingPoint) => {
+        if (!p.results) return 0;
+        const raw = (p.results as any)[activeZoneVariable] ?? (p.results as any)[activeZoneVariable.toUpperCase()] ?? 0;
+        return typeof raw === 'number' ? raw : parseFloat(raw) || 0;
+      };
+      return getVal(a) - getVal(b);
+    });
+
+    const total = sortedPoints.length;
+    const oneThird = Math.floor(total / 3);
+    const twoThirds = Math.floor((total * 2) / 3);
+
+    const updated = points.map(pt => {
+      const sIndex = sortedPoints.findIndex(s => s.id === pt.id);
+      if (sIndex < 0) return pt;
+      
+      let zone = 'Zona de Média';
+      if (sIndex < oneThird) {
+        zone = 'Zona de Baixa';
+      } else if (sIndex >= twoThirds) {
+        zone = 'Zona de Alta';
+      }
+      return { ...pt, zone };
+    });
+
+    onUpdatePoints(updated);
+  };
+
+  // Simulates high-quality geographical zone groups for demo purposes
+  const handleGenerateSimulatedZones = () => {
+    if (points.length === 0) {
+      alert("Nenhum furo amostral foi gerado. Crie uma grade de amostragem na aba 'Coleta' primeiro!");
+      return;
+    }
+
+    const lats = points.map(p => p.lat);
+    const maxLat = Math.max(...lats);
+    const minLat = Math.min(...lats);
+    const latSpan = maxLat - minLat;
+
+    const updated = points.map(p => {
+      // Create North / Middle / South bands
+      const relativeVal = (p.lat - minLat) / (latSpan || 1);
+      let zone = 'Zona de Média';
+      if (relativeVal < 0.35) {
+        zone = 'Zona de Baixa';
+      } else if (relativeVal > 0.65) {
+        zone = 'Zona de Alta';
+      }
+
+      let results = p.results;
+      if (!results) {
+        let argila = 30;
+        let pH = 5.6;
+        let MO = 2.4;
+        let P = 18;
+        let K = 3.2;
+
+        if (zone === 'Zona de Alta') {
+          argila = 45; pH = 6.2; MO = 3.6; P = 32; K = 4.5;
+        } else if (zone === 'Zona de Baixa') {
+          argila = 18; pH = 5.0; MO = 1.4; P = 10; K = 1.8;
+        }
+
+        results = {
+          pH, MO, P, K,
+          Ca: zone === 'Zona de Alta' ? 55 : (zone === 'Zona de Média' ? 38 : 22),
+          Mg: zone === 'Zona de Alta' ? 18 : (zone === 'Zona de Média' ? 12 : 6),
+          Al: zone === 'Zona de Baixa' ? 3 : 1,
+          argila,
+          mo: MO * 10,
+          p_res: P,
+          k: K / 10
+        };
+      }
+
+      return {
+        ...p,
+        zone,
+        results,
+        isCollected: true
+      };
+    });
+
+    onUpdatePoints(updated);
+  };
 
   // Real-time GPS tracker simulation states
   const [simulatedGPS, setSimulatedGPS] = useState<{ lat: number; lng: number } | null>(null);
@@ -568,20 +670,40 @@ export default function MapContainer({
       if (showGrid) {
         points.forEach((p) => {
           const hasResults = !!p.results;
-          // Determine pin colors
-          const color = p.isCollected 
-            ? (hasResults ? '#10b981' : '#3b82f6') // Collected (Green if lab results present, blue if just collected)
+          
+          // Determine pin colors based on active tab
+          let color = p.isCollected 
+            ? (hasResults ? '#10b981' : '#3b82f6') // Collected (Green / Blue)
             : '#ef4444'; // Planned (Red)
+
+          if (activeTab === 'zonas') {
+            if (p.zone === 'Zona de Alta') color = '#10b981';
+            else if (p.zone === 'Zona de Média') color = '#f59e0b';
+            else if (p.zone === 'Zona de Baixa') color = '#ef4444';
+            else color = '#64748b'; // Undefined zones are represented in slate-500
+          }
+
+          // Render transparent overlay circle to delineate physical management zone shapes
+          if (activeTab === 'zonas' && p.zone) {
+            L.circle([p.lat, p.lng], {
+              radius: 65,
+              color: color,
+              weight: 1.5,
+              fillColor: color,
+              fillOpacity: 0.20,
+              dashArray: '3, 3'
+            }).addTo(pointsGroupRef.current!);
+          }
 
           // Custom styled DivIcon using SVGs to avoid leaflet asset missing 404s
           const markerIcon = L.divIcon({
             className: 'custom-div-icon',
             html: `
               <div class="flex flex-col items-center justify-center">
-                <div class="w-7 h-7 rounded-full flex items-center justify-center text-white text-[10px] font-bold shadow-lg transition-transform hover:scale-115 active:scale-95 cursor-grab" style="background-color: ${color}; border: 2px solid white" title="Arraste para mover">
+                <div class="w-7 h-7 rounded-full flex items-center justify-center text-white text-[10px] font-bold shadow-lg transition-transform hover:scale-115 active:scale-95 cursor-grab animate-fade-in" style="background-color: ${color}; border: 2px solid white" title="Arraste para mover">
                   ${p.pointNumber}
                 </div>
-                <div class="w-1.5 h-1.5 rounded-full mt-0.5" style="background-color: ${color}"></div>
+                <div class="w-1.5 h-1.5 rounded-full mt-0.5 animate-bounce" style="background-color: ${color}"></div>
               </div>
             `,
             iconSize: [28, 35],
@@ -628,6 +750,7 @@ export default function MapContainer({
               ` : ''}
               <div><b>Coords:</b> ${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}</div>
               <div><b>Status:</b> ${p.isCollected ? '✅ Coletado' : '❌ Pendente'}</div>
+              <div><b>Zona:</b> ${p.zone ? `✨ <span class="font-bold text-indigo-700">${p.zone}</span>` : '<span class="text-slate-400 font-medium">Sem Zona Atribuída</span>'}</div>
               ${p.results ? `
                 <div class="bg-indigo-50 p-2 rounded text-indigo-800 font-semibold mt-1 space-y-0.5 border border-indigo-100">
                   <div><b>pH:</b> ${p.results.pH}</div>
@@ -656,6 +779,16 @@ export default function MapContainer({
                 <input type="number" id="edit-nr-${p.id}" value="${p.pointNumber}" class="w-full px-2 py-1 border border-slate-250 rounded text-xs text-slate-800" />
               </div>
 
+              <div>
+                <label class="text-[9px] text-slate-500 font-bold block mb-0.5">Zona de Manejo</label>
+                <select id="edit-zone-${p.id}" class="w-full px-2 py-1 border border-slate-250 rounded text-xs text-slate-800 bg-white">
+                  <option value="" ${!p.zone ? 'selected' : ''}>Sem Zona</option>
+                  <option value="Zona de Alta" ${p.zone === 'Zona de Alta' ? 'selected' : ''}>Zona de Alta</option>
+                  <option value="Zona de Média" ${p.zone === 'Zona de Média' ? 'selected' : ''}>Zona de Média</option>
+                  <option value="Zona de Baixa" ${p.zone === 'Zona de Baixa' ? 'selected' : ''}>Zona de Baixa</option>
+                </select>
+              </div>
+
               <div class="grid grid-cols-2 gap-1.5">
                 <div>
                   <label class="text-[9px] text-slate-500 font-semibold block mb-0.5">pH (H2O)</label>
@@ -682,7 +815,22 @@ export default function MapContainer({
             </div>
           `;
 
-          marker.bindPopup(popupContent);
+          // Bind painter event or popup depending on current state of brush mode
+          if (activeTab === 'zonas' && painterModeActive) {
+            marker.on('click', (e) => {
+              L.DomEvent.stopPropagation(e);
+              const targetZone = selectedPainterZone === 'Sem Zona' ? undefined : selectedPainterZone;
+              const updated = points.map((pSub) => {
+                if (pSub.id === p.id) {
+                  return { ...pSub, zone: targetZone };
+                }
+                return pSub;
+              });
+              onUpdatePoints(updated);
+            });
+          } else {
+            marker.bindPopup(popupContent);
+          }
 
           marker.on('popupopen', () => {
             // Click to toggle collection status
@@ -740,12 +888,14 @@ export default function MapContainer({
                 const moInput = document.getElementById(`edit-mo-${p.id}`) as HTMLInputElement;
                 const pInput = document.getElementById(`edit-p-${p.id}`) as HTMLInputElement;
                 const kInput = document.getElementById(`edit-k-${p.id}`) as HTMLInputElement;
+                const zoneSelect = document.getElementById(`edit-zone-${p.id}`) as HTMLSelectElement;
 
                 const nr = numInput ? parseInt(numInput.value) : p.pointNumber;
                 const pH = phInput && phInput.value !== '' ? parseFloat(phInput.value) : undefined;
                 const MO = moInput && moInput.value !== '' ? parseFloat(moInput.value) : undefined;
                 const PVal = pInput && pInput.value !== '' ? parseFloat(pInput.value) : undefined;
                 const KVal = kInput && kInput.value !== '' ? parseFloat(kInput.value) : undefined;
+                const zoneVal = zoneSelect ? zoneSelect.value : p.zone;
 
                 const hasChemicals = pH !== undefined || MO !== undefined || PVal !== undefined || KVal !== undefined;
 
@@ -766,6 +916,7 @@ export default function MapContainer({
                     return {
                       ...pSub,
                       pointNumber: isNaN(nr) ? pSub.pointNumber : nr,
+                      zone: zoneVal || undefined,
                       isCollected: hasChemicals || pSub.isCollected,
                       results: hasChemicals ? results : pSub.results
                     };
@@ -798,7 +949,7 @@ export default function MapContainer({
       setSimulatedGPS(null);
     }
 
-  }, [plot.id, points, showGrid, fieldReady]);
+  }, [plot.id, points, showGrid, fieldReady, activeTab, painterModeActive, selectedPainterZone]);
 
   // 3. Render Kriging Interpolation Layer Over the Boundary
   useEffect(() => {
@@ -1058,26 +1209,39 @@ export default function MapContainer({
         </div>
 
         {!fieldReady && (
-          <div className="flex border-b border-slate-100 bg-slate-50 p-1 rounded-lg">
+          <div className="flex border-b border-slate-100 bg-slate-50 p-0.5 rounded-lg gap-0.5">
             <button
+              type="button"
               onClick={() => setActiveTab('coleta')}
-              className={`w-1/2 py-2 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
+              className={`flex-1 py-1 px-1.5 text-[9.5px] font-extrabold rounded transition-all cursor-pointer text-center leading-relaxed h-8 flex items-center justify-center ${
                 activeTab === 'coleta' 
-                  ? 'bg-white text-emerald-700 shadow-sm' 
-                  : 'text-slate-500 hover:text-slate-700'
+                  ? 'bg-white text-emerald-700 shadow-sm font-black' 
+                  : 'text-slate-500 hover:text-slate-750 font-bold'
               }`}
             >
-              Navegação & Coleta
+              Coleta & Grade
             </button>
             <button
-              onClick={() => setActiveTab('interpolacao')}
-              className={`w-1/2 py-2 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
-                activeTab === 'interpolacao' 
-                  ? 'bg-white text-indigo-700 shadow-sm' 
-                  : 'text-slate-500 hover:text-slate-700'
+              type="button"
+              onClick={() => setActiveTab('zonas')}
+              className={`flex-1 py-1 px-1.5 text-[9.5px] font-extrabold rounded transition-all cursor-pointer text-center leading-relaxed h-8 flex items-center justify-center ${
+                activeTab === 'zonas' 
+                  ? 'bg-white text-indigo-700 shadow-sm font-black' 
+                  : 'text-slate-500 hover:text-slate-750 font-bold'
               }`}
             >
-              Interpolação (Krigagem)
+              Zonas de Manejo
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('interpolacao')}
+              className={`flex-1 py-1 px-1 text-[9.5px] font-extrabold rounded transition-all cursor-pointer text-center leading-relaxed h-8 flex items-center justify-center ${
+                activeTab === 'interpolacao' 
+                  ? 'bg-white text-indigo-700 shadow-sm font-black' 
+                  : 'text-slate-500 hover:text-slate-750 font-bold'
+              }`}
+            >
+              Krigagem
             </button>
           </div>
         )}
@@ -1266,6 +1430,183 @@ export default function MapContainer({
                 </div>
               </>
             )}
+          </div>
+        )}
+
+        {/* Tab 3: Management Zones */}
+        {activeTab === 'zonas' && (
+          <div className="space-y-4 animate-fade-in">
+            <div className="bg-slate-50 rounded-lg p-3.5 border border-slate-100">
+              <h5 className="text-xs font-bold text-slate-700 uppercase tracking-wide flex items-center justify-between">
+                <span className="flex items-center gap-1.5">
+                  <Layers className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                  Zonas de Manejo (MZs)
+                </span>
+                <span className="text-[9px] bg-indigo-100 text-indigo-800 px-1.5 py-0.5 rounded-full font-extrabold uppercase">CALIBRADO</span>
+              </h5>
+              <p className="text-slate-400 text-[10px] mt-1 leading-relaxed">
+                Agrupe os furos por potencial produtivo. Isso permite calcular prescrições de adubação e calagem específicas para cada sub-área do talhão.
+              </p>
+              
+              {/* Auto Delineation Controls */}
+              <div className="mt-3.5 pt-3 border-t border-slate-200/60 space-y-3">
+                <div className="text-[10px] font-extrabold text-slate-500 uppercase tracking-wider">Agrupamento Inteligente</div>
+                
+                <div>
+                  <label className="text-[9.5px] text-slate-600 font-bold block mb-1">Propriedade Química de Referência</label>
+                  <select
+                    value={activeZoneVariable}
+                    onChange={(e) => setActiveZoneVariable(e.target.value as keyof SoilLabResults)}
+                    className="w-full text-xs bg-white border border-slate-250 hover:border-slate-350 rounded px-2.5 py-1.5 text-slate-700 font-medium cursor-pointer"
+                  >
+                    <option value="argila">Teor de Argila (%)</option>
+                    <option value="pH">pH CaCl₂ / H₂O</option>
+                    <option value="MO">M.O. (Matéria Orgânica)</option>
+                    <option value="K">Potássio (K)</option>
+                    <option value="P">Fósforo (P)</option>
+                    <option value="v_percent">V% (Saturação por Bases)</option>
+                  </select>
+                </div>
+
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleAutoGenerateZones}
+                    className="flex-1 py-1.5 px-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded text-xs font-bold transition-all flex items-center justify-center gap-1 cursor-pointer select-none shadow-sm active:scale-[0.98]"
+                  >
+                    <Layers className="w-3.5 h-3.5 shrink-0" />
+                    Separar por Quantis
+                  </button>
+                  <button
+                    onClick={handleGenerateSimulatedZones}
+                    className="px-2.5 py-1.5 bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 rounded text-xs font-bold transition-transform cursor-pointer shadow-xs active:scale-[0.98]"
+                    title="Simular zoneamento geográfico em faixas Norte/Sul com fertilidades diferentes para demonstração"
+                  >
+                    🪄 Demo Espacial
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Interactive Paint Brush Mode */}
+            <div className="bg-slate-50 rounded-lg p-3.5 border border-slate-100 space-y-3">
+              <div className="flex justify-between items-center">
+                <div className="text-[10.5px] font-extrabold text-slate-700 uppercase tracking-wide">Pintura Manual de Furos</div>
+                <button
+                  type="button"
+                  onClick={() => setPainterModeActive(!painterModeActive)}
+                  className={`px-2 py-1 rounded text-[10px] font-bold border transition-all cursor-pointer ${
+                    painterModeActive 
+                      ? 'bg-rose-50 border-rose-250 text-rose-700 animate-pulse' 
+                      : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-650'
+                  }`}
+                >
+                  {painterModeActive ? '🔴 Pincel Ativo' : '⚪ Usar Pincel'}
+                </button>
+              </div>
+
+              {painterModeActive ? (
+                <div className="text-[9.5px] leading-relaxed text-indigo-900 bg-indigo-50/70 border border-indigo-100/60 p-2.5 rounded-lg">
+                  👉 <strong>Modo Pintura:</strong> Clique diretamente nos círculos/furos amostrais no mapa para carimbar a zona selecionada abaixo!
+                </div>
+              ) : (
+                <p className="text-slate-400 text-[9.5px] leading-relaxed">
+                  Ative o pincel para atribuir zonas rapidamente clicando sobre as amostras diretamente no mapa cartográfico.
+                </p>
+              )}
+
+              <div className="grid grid-cols-2 gap-1.5">
+                {[
+                  { name: 'Zona de Alta', color: 'bg-emerald-500 border-emerald-500 ring-emerald-500/10 text-emerald-950', bullet: 'bg-emerald-500' },
+                  { name: 'Zona de Média', color: 'bg-amber-400 border-amber-400 ring-amber-400/10 text-amber-950', bullet: 'bg-amber-400' },
+                  { name: 'Zona de Baixa', color: 'bg-rose-500 border-rose-500 ring-rose-500/10 text-rose-950', bullet: 'bg-rose-500' },
+                  { name: 'Sem Zona', color: 'bg-slate-300 border-slate-300 ring-slate-300/10 text-slate-900', bullet: 'bg-slate-400' }
+                ].map((z) => {
+                  const isSelected = selectedPainterZone === z.name;
+                  return (
+                    <button
+                      key={z.name}
+                      type="button"
+                      onClick={() => setSelectedPainterZone(z.name)}
+                      className={`py-1.5 px-2.5 rounded-md cursor-pointer transition-all border text-left flex items-center gap-1.5 ${
+                        isSelected 
+                          ? `${z.color} font-black shadow-xs ring-4` 
+                          : 'bg-white hover:bg-slate-100 text-slate-700 border-slate-200 font-medium'
+                      }`}
+                    >
+                      <span className={`w-2.5 h-2.5 rounded-full shrink-0 border border-white/50 ${z.bullet}`} />
+                      <span className="text-[9.5px] truncate font-heading">{z.name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Zone Summary & Recommendation Metrics */}
+            <div className="bg-slate-50 rounded-lg p-3.5 border border-slate-100 space-y-2.5">
+              <div className="text-[10.5px] font-extrabold text-slate-700 uppercase tracking-wide">Estatísticas das Zonas</div>
+              
+              <div className="space-y-1.5 text-[10px]">
+                {['Zona de Alta', 'Zona de Média', 'Zona de Baixa'].map((zoneName) => {
+                  const zonePts = points.filter(p => p.zone === zoneName);
+                  const count = zonePts.length;
+                  
+                  // Calculate averages of baseline soil health indicators inside this zone
+                  const ptsWithChem = zonePts.filter(p => p.results);
+                  let avgVar = 0;
+                  let avgPH = 0;
+                  let avgMO = 0;
+                  let avgP = 0;
+                  let avgK = 0;
+
+                  if (ptsWithChem.length > 0) {
+                    const getVal = (pt: SamplingPoint, key: keyof SoilLabResults) => {
+                      if (!pt.results) return 0;
+                      const raw = (pt.results as any)[key] ?? (pt.results as any)[key.toUpperCase()] ?? 0;
+                      return typeof raw === 'number' ? raw : parseFloat(raw) || 0;
+                    };
+
+                    avgVar = ptsWithChem.map(p => getVal(p, activeZoneVariable)).reduce((a,b) => a+b, 0) / ptsWithChem.length;
+                    avgPH = ptsWithChem.map(p => getVal(p, 'pH')).reduce((a,b) => a+b, 0) / ptsWithChem.length;
+                    avgMO = ptsWithChem.map(p => getVal(p, 'MO')).reduce((a,b) => a+b, 0) / ptsWithChem.length;
+                    avgP = ptsWithChem.map(p => getVal(p, 'P')).reduce((a,b) => a+b, 0) / ptsWithChem.length;
+                    avgK = ptsWithChem.map(p => getVal(p, 'K')).reduce((a,b) => a+b, 0) / ptsWithChem.length;
+                  }
+
+                  const zoneColor = zoneName === 'Zona de Alta' ? 'text-emerald-900 bg-emerald-50/70 border-emerald-100/60' :
+                                    zoneName === 'Zona de Média' ? 'text-amber-900 bg-amber-50/70 border-amber-100/60' :
+                                    'text-rose-900 bg-rose-50/70 border-rose-100/60';
+
+                  const badgeDot = zoneName === 'Zona de Alta' ? 'bg-emerald-500 animate-pulse' :
+                                   zoneName === 'Zona de Média' ? 'bg-amber-400' :
+                                   'bg-rose-500';
+
+                  return (
+                    <div key={zoneName} className={`p-2.5 rounded-lg border flex flex-col gap-1 shadow-xs transition-all ${zoneColor}`}>
+                      <div className="flex justify-between items-center font-bold">
+                        <span className="flex items-center gap-1.5 text-xs text-slate-800">
+                          <span className={`w-2 h-2 rounded-full border border-white/60 ${badgeDot}`} />
+                          {zoneName}
+                        </span>
+                        <span className="text-[11px] text-slate-600 font-extrabold">{count} furos ({points.length > 0 ? Math.round((count/points.length)*100) : 0}%)</span>
+                      </div>
+                      
+                      {count > 0 && ptsWithChem.length > 0 ? (
+                        <div className="text-[9px] text-slate-650 grid grid-cols-2 gap-y-1 gap-x-3 border-t border-slate-205/60 pt-1.5 mt-1 leading-normal font-mono">
+                          <div>Média {activeZoneVariable}: <strong className="text-slate-800 font-sans">{avgVar.toFixed(1)}</strong></div>
+                          <div>Amostras Clínicas: <strong className="text-slate-800 font-sans">{ptsWithChem.length}</strong></div>
+                          <div>pH Médio: <strong className="text-slate-800 font-sans">{avgPH.toFixed(1)}</strong></div>
+                          <div>M.O. Média: <strong className="text-slate-800 font-sans">{avgMO.toFixed(1)}%</strong></div>
+                          <div>Fósforo P: <strong className="text-slate-800 font-sans">{avgP.toFixed(1)} ppm</strong></div>
+                          <div>Potássio K: <strong className="text-slate-800 font-sans">{avgK.toFixed(1)} mmolc</strong></div>
+                        </div>
+                      ) : (
+                        <div className="text-[9px] text-slate-500 italic mt-0.5">Nenhum laudo químico cadastrado para as amostras desta zona.</div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           </div>
         )}
 
