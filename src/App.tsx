@@ -19,6 +19,7 @@ import MapContainer from './components/MapContainer';
 import LabResultsManager from './components/LabResultsManager';
 import AIPanel, { calculateAutoRecs } from './components/AIPanel';
 import FertilityAndMaps from './components/FertilityAndMaps';
+import PropertyMap from './components/PropertyMap';
 import { downloadGISZip } from './utils/fileExporter';
 import { 
   Sprout, Database, Layers, CheckSquare, Download, 
@@ -66,7 +67,7 @@ export default function App() {
   const [activePlotId, setActivePlotId] = useState<string>('plot-1');
   const [activeMonthYear, setActiveMonthYear] = useState<string>('05/2026');
   const [offlineMode, setOfflineMode] = useState<boolean>(false);
-  const [activeTab, setActiveTab] = useState<'clients' | 'field_station' | 'lab_results' | 'ai_panel' | 'fertility_maps'>('clients');
+  const [activeTab, setActiveTab] = useState<'clients' | 'field_station' | 'lab_results' | 'ai_panel' | 'fertility_maps' | 'property_map'>('clients');
   const [globalDesiredV2, setGlobalDesiredV2] = useState<number>(70);
   const [globalPrnt, setGlobalPrnt] = useState<number>(80);
   const [globalMinDose, setGlobalMinDose] = useState<number>(0.5);
@@ -241,6 +242,66 @@ export default function App() {
       unsubPlotPeriods();
     };
   }, []);
+
+  // Dynamically heal plots in Firestore that were created in a wrong far-off location (e.g., misplaced SP fallback)
+  useEffect(() => {
+    if (plots.length === 0 || dbStatus !== 'connected') return;
+
+    // Group plots by farmId
+    const plotsByFarm: Record<string, Plot[]> = {};
+    plots.forEach(p => {
+      if (!p.farmId) return;
+      if (!plotsByFarm[p.farmId]) plotsByFarm[p.farmId] = [];
+      plotsByFarm[p.farmId].push(p);
+    });
+
+    const healMisplacedPlots = async () => {
+      for (const farmId in plotsByFarm) {
+        const farmPlots = plotsByFarm[farmId];
+        // Find a "reference" plot that is correctly located or has original boundary points
+        const refPlot = farmPlots.find(p => p.boundaryPoints && p.boundaryPoints.length >= 3 && !p.id.includes('plot-17')); // Find non-temp reference plots
+        const primaryRef = refPlot || farmPlots.find(p => p.boundaryPoints && p.boundaryPoints.length >= 3);
+        if (!primaryRef || !primaryRef.boundaryPoints || primaryRef.boundaryPoints.length === 0) continue;
+
+        const refLat = primaryRef.boundaryPoints[0].lat;
+        const refLng = primaryRef.boundaryPoints[0].lng;
+
+        // Check if any plot in this farm is misplaced (e.g., distance > 0.5 degrees in lat/lng from ref)
+        for (const plot of farmPlots) {
+          if (!plot.boundaryPoints || plot.boundaryPoints.length === 0) continue;
+          const firstPt = plot.boundaryPoints[0];
+          const distanceLat = Math.abs(firstPt.lat - refLat);
+          const distanceLng = Math.abs(firstPt.lng - refLng);
+
+          if (distanceLat > 0.5 || distanceLng > 0.5) {
+            console.log(`Healing misplaced plot: ${plot.name} in farm ${farmId}`);
+            const baseLat = refLat;
+            const baseLng = refLng;
+
+            const healedPlot: Plot = {
+              ...plot,
+              boundaryPoints: [
+                { lat: baseLat + 0.003, lng: baseLng - 0.003 },
+                { lat: baseLat + 0.003, lng: baseLng + 0.003 },
+                { lat: baseLat - 0.003, lng: baseLng + 0.003 },
+                { lat: baseLat - 0.003, lng: baseLng - 0.003 },
+                { lat: baseLat + 0.003, lng: baseLng - 0.003 }
+              ]
+            };
+
+            try {
+              await setDoc(doc(db, 'plots', healedPlot.id), removeUndefined(healedPlot));
+              console.log(`Successfully healed plot ${plot.name}`);
+            } catch (err) {
+              console.error(`Failed to heal plot ${plot.name}:`, err);
+            }
+          }
+        }
+      }
+    };
+
+    healMisplacedPlots();
+  }, [plots, dbStatus]);
 
   // Camadas de solo & Subamostras
   const [soilLayers, setSoilLayers] = useState<string[]>(['0-20cm', '20-40cm', '40-60cm']);
@@ -440,8 +501,14 @@ export default function App() {
   };
 
   const handleAddPlot = async (farmId: string, name: string, area: number, crop: string) => {
-    const baseLat = activePlot?.boundaryPoints?.[0]?.lat || -21.17;
-    const baseLng = activePlot?.boundaryPoints?.[0]?.lng || -47.81;
+    // 1. Try to find any existing plot inside this specific farm to use as coordinate reference
+    const siblingPlot = plots.find(p => p.farmId === farmId);
+    
+    // 2. Fall back to activePlot if it belongs to this farm
+    const refPlot = siblingPlot || (activePlot?.farmId === farmId ? activePlot : null) || plots.find(p => p.boundaryPoints?.length > 0) || plots[0];
+
+    const baseLat = refPlot?.boundaryPoints?.[0]?.lat || -21.17;
+    const baseLng = refPlot?.boundaryPoints?.[0]?.lng || -47.81;
 
     const newPlot: Plot = {
       id: `plot-${Date.now()}`,
@@ -823,6 +890,17 @@ export default function App() {
             <span className={`w-1.5 h-1.5 rounded-full ${activeTab === 'fertility_maps' ? 'bg-indigo-500 scale-125' : 'bg-indigo-500'}`}></span>
             Fertilidade e Mapas
           </button>
+          <button 
+            onClick={() => setActiveTab('property_map')}
+            className={`w-full flex items-center gap-3 px-3 py-2 rounded-md transition-colors text-xs font-semibold cursor-pointer text-left ${
+              activeTab === 'property_map' 
+                ? 'bg-slate-800 text-white border-l-2 border-emerald-450' 
+                : 'text-slate-400 hover:text-white hover:bg-slate-800/85'
+            }`}
+          >
+            <span className={`w-1.5 h-1.5 rounded-full ${activeTab === 'property_map' ? 'bg-emerald-400 scale-125' : 'bg-emerald-400'}`}></span>
+            Mapa de Propriedades
+          </button>
         </nav>
 
         <div className="p-4 mt-auto bg-slate-900 border-t border-slate-800">
@@ -936,6 +1014,19 @@ export default function App() {
           >
             <Layers className="w-3.5 h-3.5 shrink-0" />
             <span>Fertilidade & Mapas</span>
+          </button>
+
+          <button
+            id="mobile-tab-property-map"
+            onClick={() => setActiveTab('property_map')}
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition-all cursor-pointer ${
+              activeTab === 'property_map'
+                ? 'bg-emerald-50 text-emerald-700 border border-emerald-250 shadow-sm'
+                : 'bg-slate-50 text-slate-650 hover:bg-slate-100 border border-transparent'
+            }`}
+          >
+            <Layers className="w-3.5 h-3.5 shrink-0" />
+            <span>Mapa de Propriedades</span>
           </button>
         </div>
 
@@ -1135,6 +1226,34 @@ export default function App() {
                   setUserCellSizeM={handleUpdateUserCellSizeM}
                 />
               ) : null}
+            </section>
+          )}
+
+          {activeTab === 'property_map' && (
+            <section id="property-map-section" className="space-y-2.5 scroll-mt-20">
+              <div className="flex items-center gap-2">
+                <CheckSquare className="w-4 h-4 text-emerald-500" />
+                <h3 className="text-[11px] uppercase font-extrabold tracking-wider text-slate-400 font-heading">6. Mapa de Propriedades</h3>
+              </div>
+              <PropertyMap
+                farm={activeFarm}
+                plots={plots}
+                plotPeriods={plotPeriods}
+                samplingPoints={samplingPoints}
+                soilLayers={soilLayers}
+                activeSoilLayer={activeSoilLayer}
+                onSelectPlot={(plotId) => {
+                  setActivePlotId(plotId);
+                  const pPeriod = plotPeriods.find(p => p.plotId === plotId);
+                  if (pPeriod) {
+                    setActiveMonthYear(pPeriod.monthYear);
+                  } else {
+                    setActiveMonthYear('05/2026');
+                  }
+                }}
+                onSelectTab={setActiveTab}
+                activePlotId={activePlotId}
+              />
             </section>
           )}
 
