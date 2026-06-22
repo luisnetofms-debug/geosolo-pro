@@ -9,7 +9,7 @@
  */
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { Client, Farm, Plot, SamplingPoint, Project, PlotPeriod } from './types';
+import { Client, Farm, Plot, SamplingPoint, Project, PlotPeriod, UserProfile } from './types';
 import { 
   INITIAL_CLIENTS, INITIAL_FARMS, INITIAL_PLOTS, 
   INITIAL_SAMPLING_POINTS, INITIAL_PROJECTS 
@@ -65,7 +65,7 @@ export default function App() {
   const [projects, setProjects] = useState<Project[]>([]);
 
   // Active Workspace
-  const [activePlotId, setActivePlotId] = useState<string>('plot-1');
+  const [activePlotId, setActivePlotId] = useState<string>('');
   const [activeMonthYear, setActiveMonthYear] = useState<string>('05/2026');
   const [offlineMode, setOfflineMode] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<'clients' | 'field_station' | 'lab_results' | 'ai_panel' | 'fertility_maps' | 'property_map' | 'system_backup'>('clients');
@@ -75,6 +75,27 @@ export default function App() {
   const [globalMinDose, setGlobalMinDose] = useState<number>(0.5);
   const [globalUserCellSizeM, setGlobalUserCellSizeM] = useState<number>(50);
   const [globalFieldReady, setGlobalFieldReady] = useState<boolean>(false);
+
+  // User Profile configuration state
+  const [userProfile, setUserProfile] = useState<UserProfile>(() => {
+    try {
+      const saved = localStorage.getItem('geosolo_user_profile');
+      if (saved) {
+        return JSON.parse(saved);
+      }
+    } catch (_) {}
+    return {
+      name: 'Eng. Agrônomo',
+      role: 'Consultor Técnico',
+      initials: 'RC',
+      unit: 'Unidade Cascavel',
+      email: 'luis.netofms@gmail.com',
+      crea: 'CREA-PR 87431/D',
+      phone: '(45) 99999-1234'
+    };
+  });
+  const [isProfileModalOpen, setIsProfileModalOpen] = useState<boolean>(false);
+
 
   // Db Status Counters
   const [dbStatus, setDbStatus] = useState<'connecting' | 'connected' | 'error'>('connecting');
@@ -89,9 +110,7 @@ export default function App() {
     updateTime();
     const interval = setInterval(updateTime, 1000);
     return () => clearInterval(interval);
-  }, []);
-
-  // 1. Connection Health Check & Auto-Seeding if empty
+  }, []);  // 1. Connection Health Check & Auto-Seeding if empty
   useEffect(() => {
     let active = true;
 
@@ -101,60 +120,30 @@ export default function App() {
         // Simple connection diagnostic fetch
         await getDocFromServer(doc(db, 'test', 'connection')).catch(() => {});
 
-        // Fetch clients count to evaluate if we should seed default demonstration data
-        const clientsSnap = await getDocs(collection(db, 'clients'));
-        if (clientsSnap.empty) {
-          console.log('Banco de Dados vazio! Semeando os registros iniciais do GeoSolo Pro no Firestore...');
-          const batch = writeBatch(db);
+        // Process a one-time purge of demonstration data from the Firestore database if present
+        const demoClientIds = ['cli-1', 'cli-2'];
+        const demoFarmIds = ['farm-1', 'farm-2'];
+        const demoPlotIds = ['plot-1', 'plot-2'];
+        const demoProjectIds = ['proj-1'];
+        const demoPeriodIds = ['period-1', 'period-2'];
+        const demoPointIds = Array.from({ length: 16 }, (_, i) => `pt-${i + 1}`);
 
-          INITIAL_CLIENTS.forEach(cli => {
-            batch.set(doc(db, 'clients', cli.id), removeUndefined(cli));
-          });
-          INITIAL_FARMS.forEach(f => {
-            batch.set(doc(db, 'farms', f.id), removeUndefined(f));
-          });
-          INITIAL_PLOTS.forEach(p => {
-            batch.set(doc(db, 'plots', p.id), removeUndefined(p));
-          });
-          INITIAL_SAMPLING_POINTS.forEach(pt => {
-            batch.set(doc(db, 'samplingPoints', pt.id), removeUndefined(pt));
-          });
-          INITIAL_PROJECTS.forEach(proj => {
-            batch.set(doc(db, 'projects', proj.id), removeUndefined(proj));
-          });
+        const purgeBatch = writeBatch(db);
+        demoClientIds.forEach(id => purgeBatch.delete(doc(db, 'clients', id)));
+        demoFarmIds.forEach(id => purgeBatch.delete(doc(db, 'farms', id)));
+        demoPlotIds.forEach(id => purgeBatch.delete(doc(db, 'plots', id)));
+        demoProjectIds.forEach(id => purgeBatch.delete(doc(db, 'projects', id)));
+        demoPeriodIds.forEach(id => purgeBatch.delete(doc(db, 'plotPeriods', id)));
+        demoPointIds.forEach(id => purgeBatch.delete(doc(db, 'samplingPoints', id)));
 
-          // Seed default plot periods (months/years) for the initial plots
-          const defaultPeriods: PlotPeriod[] = [
-            {
-              id: 'period-1',
-              plotId: 'plot-1',
-              monthYear: '05/2026',
-              cropType: 'Soja',
-              notes: 'Amostragem Principal de Outono',
-              creationDate: '2026-05-18T18:00:00Z'
-            },
-            {
-              id: 'period-2',
-              plotId: 'plot-2',
-              monthYear: '05/2026',
-              cropType: 'Milho',
-              notes: 'Safrinha e cobertura',
-              creationDate: '2026-05-18T18:00:00Z'
-            }
-          ];
-          defaultPeriods.forEach(p => {
-            batch.set(doc(db, 'plotPeriods', p.id), removeUndefined(p));
-          });
-
-          await batch.commit();
-          console.log('Seeding concluído com sucesso!');
-        }
+        await purgeBatch.commit().catch(() => {});
+        console.log('Demonstration database records successfully cleared.');
 
         if (active) {
           setDbStatus('connected');
         }
       } catch (error) {
-        console.error('Erro de conexão ao Firestore ou durante seeding:', error);
+        console.error('Erro de conexão ao Firestore ou durante purga:', error);
         if (active) {
           setDbStatus('error');
         }
@@ -162,6 +151,7 @@ export default function App() {
     }
 
     checkAndSeed();
+
     return () => {
       active = false;
     };
@@ -903,49 +893,7 @@ export default function App() {
         await Promise.all(deleteChunks);
       }
 
-      // Now Seed initial data
-      const seedBatch = writeBatch(db);
-      INITIAL_CLIENTS.forEach(cli => {
-        seedBatch.set(doc(db, 'clients', cli.id), removeUndefined(cli));
-      });
-      INITIAL_FARMS.forEach(f => {
-        seedBatch.set(doc(db, 'farms', f.id), removeUndefined(f));
-      });
-      INITIAL_PLOTS.forEach(p => {
-        seedBatch.set(doc(db, 'plots', p.id), removeUndefined(p));
-      });
-      INITIAL_SAMPLING_POINTS.forEach(pt => {
-        seedBatch.set(doc(db, 'samplingPoints', pt.id), removeUndefined(pt));
-      });
-      INITIAL_PROJECTS.forEach(proj => {
-        seedBatch.set(doc(db, 'projects', proj.id), removeUndefined(proj));
-      });
-
-      // Default periods
-      const defaultPeriods: PlotPeriod[] = [
-        {
-          id: 'period-1',
-          plotId: 'plot-1',
-          monthYear: '05/2026',
-          cropType: 'Soja',
-          notes: 'Amostragem Principal de Outono',
-          creationDate: '2026-05-18T18:00:00Z'
-        },
-        {
-          id: 'period-2',
-          plotId: 'plot-2',
-          monthYear: '05/2026',
-          cropType: 'Milho',
-          notes: 'Safrinha e cobertura',
-          creationDate: '2026-05-18T18:00:00Z'
-        }
-      ];
-      defaultPeriods.forEach(p => {
-        seedBatch.set(doc(db, 'plotPeriods', p.id), removeUndefined(p));
-      });
-
-      await seedBatch.commit();
-      setActivePlotId('plot-1');
+      setActivePlotId('');
       setActiveMonthYear('05/2026');
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, 'database_reset');
@@ -1019,7 +967,7 @@ export default function App() {
             }`}
           >
             <span className={`w-1.5 h-1.5 rounded-full ${activeTab === 'ai_panel' ? 'bg-amber-400 scale-125' : 'bg-amber-400'}`}></span>
-            Diagnóstico IA (Parecer)
+            Diagnóstico Agronômico
           </button>
           <button 
             onClick={() => setActiveTab('fertility_maps')}
@@ -1082,17 +1030,23 @@ export default function App() {
           </div>
         </nav>
 
-        <div className="p-4 mt-auto bg-slate-900 border-t border-slate-800">
+        <button 
+          id="system-user-profile-button"
+          onClick={() => setIsProfileModalOpen(true)}
+          className="w-full p-4 mt-auto bg-slate-900 border-t border-slate-800 hover:bg-slate-800/50 transition-colors text-left flex items-center justify-between group cursor-pointer"
+          title="Clique para cadastrar ou editar seu perfil de usuário"
+        >
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded bg-[#1E293B] border border-slate-700 text-emerald-400 flex items-center justify-center font-bold text-xs font-heading shadow-inner">
-              RC
+            <div className="w-9 h-9 rounded bg-[#1E293B] border border-slate-700 text-emerald-400 flex items-center justify-center font-bold text-xs font-heading shadow-inner group-hover:border-emerald-400/50 transition-colors shrink-0">
+              {userProfile.initials || 'RC'}
             </div>
-            <div className="text-xs">
-              <p className="text-white font-medium">Eng. Agrônomo</p>
-              <p className="text-slate-400 text-[10px]">Unidade Cascavel</p>
+            <div className="text-xs min-w-0">
+              <p className="text-white font-medium truncate group-hover:text-emerald-400 transition-colors">{userProfile.name}</p>
+              <p className="text-slate-400 text-[10px] truncate">{userProfile.unit}</p>
             </div>
           </div>
-        </div>
+          <span className="text-slate-500 group-hover:text-amber-400 transition-colors text-[10px] pl-1 font-mono">✎</span>
+        </button>
       </aside>
 
       {/* 2. MAIN WORKSPACE */}
@@ -1179,7 +1133,7 @@ export default function App() {
             }`}
           >
             <CheckSquare className="w-3.5 h-3.5 shrink-0" />
-            <span>Diagnóstico IA</span>
+            <span>Diagnóstico Agronômico</span>
           </button>
 
           <button
@@ -1485,6 +1439,162 @@ export default function App() {
       </div>
     </div>
 
+    {/* CADASTRO DE OPERADOR/ENGENHEIRO AGRÔNOMO MODAL */}
+    {isProfileModalOpen && (
+      <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in print:hidden">
+        <div 
+          className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-md w-full overflow-hidden text-left"
+          onClick={(e) => e.stopPropagation()}
+          id="profile-custom-modal"
+        >
+          {/* Header */}
+          <div className="bg-[#0F172A] text-white p-5 flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-lg bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 flex items-center justify-center font-bold">
+                {userProfile.initials || 'RC'}
+              </div>
+              <div>
+                <h3 className="font-bold text-sm font-heading">Perfil do Profissional</h3>
+                <p className="text-[10px] text-slate-400">Configure suas informações de assinatura e laudos</p>
+              </div>
+            </div>
+            <button 
+              onClick={() => setIsProfileModalOpen(false)}
+              className="text-slate-400 hover:text-white transition-colors cursor-pointer text-xs font-bold bg-slate-800 hover:bg-slate-700 w-6 h-6 rounded-full flex items-center justify-center border-0"
+            >
+              ✕
+            </button>
+          </div>
+
+          {/* Form Formulario */}
+          <form 
+            onSubmit={(e) => {
+              e.preventDefault();
+              const formData = new FormData(e.currentTarget);
+              const name = formData.get('name') as string || 'Eng. Agrônomo';
+              const role = formData.get('role') as string || 'Consultor Técnico';
+              const unit = formData.get('unit') as string || 'Unidade Cascavel';
+              const email = formData.get('email') as string || 'luis.netofms@gmail.com';
+              const crea = formData.get('crea') as string || 'CREA-PR 87431/D';
+              const phone = formData.get('phone') as string || '(45) 99999-1234';
+
+              // Automatically generate initials (up to 2 letters, uppercase)
+              const parts = name.trim().split(/\s+/);
+              let initials = 'RC';
+              if (parts.length > 1) {
+                initials = (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+              } else if (parts.length === 1 && parts[0].length > 0) {
+                initials = parts[0].substring(0, 2).toUpperCase();
+              }
+
+              const updatedProfile: UserProfile = {
+                name,
+                role,
+                initials,
+                unit,
+                email,
+                crea,
+                phone
+              };
+
+              setUserProfile(updatedProfile);
+              localStorage.setItem('geosolo_user_profile', JSON.stringify(updatedProfile));
+              setIsProfileModalOpen(false);
+            }}
+            className="p-6 space-y-4 text-xs text-slate-700"
+          >
+            <div className="space-y-1">
+              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">Nome Completo</label>
+              <input 
+                type="text" 
+                name="name" 
+                defaultValue={userProfile.name}
+                required
+                className="w-full px-3 py-2 border border-slate-250 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 bg-slate-50 text-slate-800"
+                placeholder="Ex: Rodrigo Coleti Neto"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">Cargo / Profissão</label>
+                <input 
+                  type="text" 
+                  name="role" 
+                  defaultValue={userProfile.role}
+                  required
+                  className="w-full px-3 py-2 border border-slate-250 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 bg-slate-50 text-slate-800"
+                  placeholder="Ex: Eng. Agrônomo"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">Registro Profissional (CREA)</label>
+                <input 
+                  type="text" 
+                  name="crea" 
+                  defaultValue={userProfile.crea}
+                  className="w-full px-3 py-2 border border-slate-250 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 bg-slate-50 text-slate-800"
+                  placeholder="Ex: CREA-PR 87431/D"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">Unidade / Regional de Atuação</label>
+              <input 
+                type="text" 
+                name="unit" 
+                defaultValue={userProfile.unit}
+                required
+                className="w-full px-3 py-2 border border-slate-250 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 bg-slate-50 text-slate-800"
+                placeholder="Ex: Unidade Cascavel"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">E-mail de Contato</label>
+                <input 
+                  type="email" 
+                  name="email" 
+                  defaultValue={userProfile.email}
+                  required
+                  className="w-full px-3 py-2 border border-slate-250 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 bg-slate-50 text-slate-800"
+                  placeholder="Ex: luis.netofms@gmail.com"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">Telefone</label>
+                <input 
+                  type="text" 
+                  name="phone" 
+                  defaultValue={userProfile.phone}
+                  className="w-full px-3 py-2 border border-slate-250 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 bg-slate-50 text-slate-800"
+                  placeholder="Ex: (45) 99999-1234"
+                />
+              </div>
+            </div>
+
+            <div className="pt-4 border-t border-slate-100 flex gap-2">
+              <button 
+                type="button"
+                onClick={() => setIsProfileModalOpen(false)}
+                className="flex-1 py-1.5 px-3 border border-slate-200 text-slate-500 rounded-lg font-bold text-[10px] uppercase tracking-wider hover:bg-slate-100 cursor-pointer text-center bg-transparent"
+              >
+                Cancelar
+              </button>
+              <button 
+                type="submit"
+                className="flex-1 py-1.5 px-3 bg-emerald-600 hover:bg-emerald-750 text-white rounded-lg font-bold text-[10px] uppercase tracking-wider cursor-pointer shadow-xs text-center border-0"
+              >
+                Salvar Cadastro
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    )}
+
     {/* 2. PROFESSIONAL AGRONOMIC REPORT (Visible only on print or print layouts) */}
     <div className="print-only w-full bg-white text-black p-10 font-sans text-xs">
       <div className="border-b-2 border-emerald-600 pb-4 mb-6 flex justify-between items-end">
@@ -1731,8 +1841,8 @@ export default function App() {
         </div>
         <div className="flex flex-col items-center justify-end text-center">
           <div className="w-48 border-b border-slate-400 mb-1" />
-          <p className="text-[10px] font-bold text-slate-800">Engenheiro Agrônomo Técnico</p>
-          <p className="text-[9px] text-slate-500">CREA PR / Cascavel - PR</p>
+          <p className="text-[10px] font-bold text-slate-800">{userProfile.name}</p>
+          <p className="text-[9px] text-slate-500">{userProfile.crea || 'CREA'} / {userProfile.unit}</p>
         </div>
       </div>
     </div>

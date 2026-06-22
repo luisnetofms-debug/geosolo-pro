@@ -37,7 +37,6 @@ export default function SystemBackup({
 }: SystemBackupProps) {
   const [isExporting, setIsExporting] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
-  const [isResetting, setIsResetting] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [statusMessage, setStatusMessage] = useState<{
     text: string;
@@ -45,7 +44,6 @@ export default function SystemBackup({
   } | null>(null);
   const [showConfirmRestore, setShowConfirmRestore] = useState(false);
   const [pendingBackupData, setPendingBackupData] = useState<any>(null);
-  const [showConfirmReset, setShowConfirmReset] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -165,26 +163,6 @@ export default function SystemBackup({
       });
     } finally {
       setIsImporting(false);
-    }
-  };
-
-  const executeReset = async () => {
-    setIsResetting(true);
-    setShowConfirmReset(false);
-    try {
-      await onResetDatabaseToStaticDefaults();
-      setStatusMessage({
-        text: 'Banco de dados restaurado com sucesso para os dados de demonstração originais da Fazenda Alegria!',
-        type: 'success'
-      });
-    } catch (err: any) {
-      console.error(err);
-      setStatusMessage({
-        text: `Erro ao resetar banco do sistema: ${err.message || err}`,
-        type: 'error'
-      });
-    } finally {
-      setIsResetting(false);
     }
   };
 
@@ -394,29 +372,6 @@ export default function SystemBackup({
 
         </div>
 
-        {/* Database reset section (Humble reset of demo state) */}
-        <div className="border border-rose-100 rounded-lg p-4 bg-rose-50/30 flex flex-col md:flex-row md:items-center justify-between gap-4 mt-4">
-          <div className="flex items-start gap-3">
-            <div className="p-2 rounded bg-rose-150/50 text-rose-700 mt-1 shrink-0">
-              <Trash2 className="w-4 h-4" />
-            </div>
-            <div>
-              <h5 className="text-[11px] font-extrabold text-slate-800 uppercase tracking-tight">Saneamento e Reinicialização</h5>
-              <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">
-                Caso deseje recomeçar a exploração do GeoSolo Pro, você pode resetar o banco de dados do Firestore para carregar novamente as fazendas e talhões de demonstração originais de forma limpa.
-              </p>
-            </div>
-          </div>
-          <button
-            onClick={() => setShowConfirmReset(true)}
-            disabled={isResetting}
-            className="px-4 py-2 hover:bg-rose-100 text-rose-700 font-bold text-xs rounded border border-rose-250 transition-colors cursor-pointer shrink-0 disabled:opacity-50 inline-flex items-center gap-1.5"
-          >
-            {isResetting ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
-            <span>Resetar Demo Inicial</span>
-          </button>
-        </div>
-
         {/* Informative Guidance */}
         <div className="border-t border-slate-100 pt-5 flex gap-3 text-[11px] text-slate-400 leading-relaxed">
           <Info className="w-4.5 h-4.5 text-purple-400 shrink-0 mt-0.5" />
@@ -476,45 +431,6 @@ export default function SystemBackup({
         </div>
       )}
 
-      {/* Confirmation Modal - RESET SYSTEM */}
-      {showConfirmReset && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 animate-fade-in">
-          <div className="bg-white border border-slate-200 rounded-xl max-w-md w-full overflow-hidden shadow-2xl p-6 space-y-4">
-            <div className="flex items-start gap-4">
-              <div className="p-3 bg-rose-100 rounded-full text-rose-750 shrink-0">
-                <AlertTriangle className="w-6 h-6" />
-              </div>
-              <div>
-                <h3 className="text-sm font-black text-rose-800 border-b border-rose-100 pb-1 uppercase font-heading">
-                  ⚠️ Perigo: Confirmar Resetação do Banco?
-                </h3>
-                <p className="text-xs text-slate-500 mt-2 leading-relaxed">
-                  Esta ação irá apagar definitivamente os dados de clientes, fazendas e talhões atualmente em seu Firestore e restaurar a visualização padrão limpa (semeando novamente a Fazenda Alegria original de demonstração). 
-                </p>
-                <p className="text-xs text-slate-500 mt-2 font-bold leading-relaxed">
-                  Recomendamos exportar e baixar um arquivo de backup antes de proceder!
-                </p>
-              </div>
-            </div>
-
-            <div className="flex gap-2.5 justify-end pt-2">
-              <button
-                onClick={() => setShowConfirmReset(false)}
-                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded transition-colors cursor-pointer"
-              >
-                Voltar com Segurança
-              </button>
-              <button
-                onClick={executeReset}
-                className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs rounded shadow-sm hover:shadow transition-all cursor-pointer inline-flex items-center gap-1.5"
-              >
-                <Trash2 className="w-4 h-4" />
-                <span>Apagar e Semear Padrão</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
     </div>
   );

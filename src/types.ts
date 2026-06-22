@@ -189,3 +189,13 @@ export const FERTILITY_THRESHOLDS: Record<keyof SoilLabResults, { low: number; m
   clas_textura: { low: 0, medium: 0, high: 0, unit: '', name: 'CLAS. TEXTURA' },
   tipo_solo: { low: 0, medium: 0, high: 0, unit: '', name: 'TIPO SOLO' },
 };
+
+export interface UserProfile {
+  name: string;
+  role: string;
+  initials: string;
+  unit: string;
+  email: string;
+  crea?: string;
+  phone?: string;
+}
