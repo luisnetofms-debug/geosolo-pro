@@ -46,6 +46,9 @@ export default function PropertyMap({
   // Track map visibility state (active vs hidden) per plot
   const [visiblePlotIds, setVisiblePlotIds] = useState<Record<string, boolean>>({});
 
+  const [saveStatus, setSaveStatus] = useState<string | null>(null);
+  const [lastSavedDate, setLastSavedDate] = useState<string | null>(null);
+
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const layersGroupRef = useRef<L.FeatureGroup | null>(null);
@@ -56,16 +59,67 @@ export default function PropertyMap({
     return plots.filter(p => p.farmId === farm.id);
   }, [plots, farm]);
 
+  // Load saved configurations on mount / farm change
+  useEffect(() => {
+    if (!farm) return;
+    try {
+      const savedConfigStr = localStorage.getItem(`geosolo_property_map_config_${farm.id}`);
+      if (savedConfigStr) {
+        const config = JSON.parse(savedConfigStr);
+        if (config) {
+          if (config.plotSelectedProjects) {
+            setPlotSelectedProjects(config.plotSelectedProjects);
+          }
+          if (config.visiblePlotIds) {
+            setVisiblePlotIds(config.visiblePlotIds);
+          }
+          if (config.activeLayer) {
+            setActiveLayer(config.activeLayer);
+          }
+          if (config.mapVariable) {
+            setMapVariable(config.mapVariable);
+          }
+          if (config.savedAt) {
+            setLastSavedDate(new Date(config.savedAt).toLocaleString('pt-BR'));
+          } else {
+            setLastSavedDate(null);
+          }
+        }
+      } else {
+        setLastSavedDate(null);
+      }
+    } catch (err) {
+      console.error('Failed to load saved property map configuration:', err);
+      setLastSavedDate(null);
+    }
+  }, [farm]);
+
   // Set initial selected plot once farm plots load
   useEffect(() => {
     if (farmPlots.length > 0) {
-      if (globalActivePlotId && farmPlots.some(p => p.id === globalActivePlotId)) {
+      // Check if we loaded a saved plot from localStorage first
+      let loadSavedId = '';
+      if (farm) {
+        try {
+          const savedConfigStr = localStorage.getItem(`geosolo_property_map_config_${farm.id}`);
+          if (savedConfigStr) {
+            const config = JSON.parse(savedConfigStr);
+            if (config && config.selectedPlotId && farmPlots.some(p => p.id === config.selectedPlotId)) {
+              loadSavedId = config.selectedPlotId;
+            }
+          }
+        } catch (_) {}
+      }
+
+      if (loadSavedId) {
+        setSelectedPlotId(loadSavedId);
+      } else if (globalActivePlotId && farmPlots.some(p => p.id === globalActivePlotId)) {
         setSelectedPlotId(globalActivePlotId);
-      } else {
+      } else if (!selectedPlotId || !farmPlots.some(p => p.id === selectedPlotId)) {
         setSelectedPlotId(farmPlots[0].id);
       }
     }
-  }, [farmPlots, globalActivePlotId]);
+  }, [farmPlots, globalActivePlotId, farm]);
 
   // Initialize visibility state for plots
   useEffect(() => {
@@ -83,6 +137,68 @@ export default function PropertyMap({
       });
     }
   }, [farmPlots]);
+
+  const handleSaveDisplayConfig = () => {
+    if (!farm) return;
+    try {
+      const config = {
+        plotSelectedProjects,
+        visiblePlotIds,
+        activeLayer,
+        mapVariable,
+        selectedPlotId,
+        savedAt: new Date().toISOString()
+      };
+      localStorage.setItem(`geosolo_property_map_config_${farm.id}`, JSON.stringify(config));
+      setLastSavedDate(new Date().toLocaleString('pt-BR'));
+      setSaveStatus('Sucesso');
+      setTimeout(() => setSaveStatus(null), 3000);
+    } catch (err) {
+      console.error(err);
+      setSaveStatus('Erro');
+      setTimeout(() => setSaveStatus(null), 3000);
+    }
+  };
+
+  const handleRestoreDisplayConfig = () => {
+    if (!farm) return;
+    try {
+      const savedConfigStr = localStorage.getItem(`geosolo_property_map_config_${farm.id}`);
+      if (savedConfigStr) {
+        const config = JSON.parse(savedConfigStr);
+        if (config) {
+          if (config.plotSelectedProjects) setPlotSelectedProjects(config.plotSelectedProjects);
+          if (config.visiblePlotIds) setVisiblePlotIds(config.visiblePlotIds);
+          if (config.activeLayer) setActiveLayer(config.activeLayer);
+          if (config.mapVariable) setMapVariable(config.mapVariable);
+          if (config.selectedPlotId && farmPlots.some(p => p.id === config.selectedPlotId)) {
+            setSelectedPlotId(config.selectedPlotId);
+          }
+          setSaveStatus('Restaurado');
+          setTimeout(() => setSaveStatus(null), 3000);
+        }
+      } else {
+        setSaveStatus('Nenhum salvo');
+        setTimeout(() => setSaveStatus(null), 3000);
+      }
+    } catch (err) {
+      console.error(err);
+      setSaveStatus('Erro');
+      setTimeout(() => setSaveStatus(null), 3005);
+    }
+  };
+
+  const handleClearDisplayConfig = () => {
+    if (!farm) return;
+    try {
+      localStorage.removeItem(`geosolo_property_map_config_${farm.id}`);
+      setLastSavedDate(null);
+      setSaveStatus('Limpo');
+      setTimeout(() => setSaveStatus(null), 3000);
+    } catch (e) {
+      console.error(e);
+    }
+  };
 
   // Determine available projects (monthYears) for each plot
   const plotAvailablePeriods = useMemo(() => {
@@ -516,6 +632,84 @@ export default function PropertyMap({
               </select>
             </div>
           </div>
+        </div>
+
+        {/* Persistência de Exibição / Display Configurations persistence */}
+        <div className="bg-slate-900 border border-slate-850 rounded-xl p-4 space-y-3 text-white shadow-xs text-left" id="display-configurations-persistence-card">
+          <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+            <div className="flex items-center gap-2">
+              <Settings className="w-4 h-4 text-purple-400" />
+              <span className="text-[10px] font-extrabold uppercase tracking-wide text-purple-300">
+                Configurações de Exibição:
+              </span>
+            </div>
+            <span className="bg-purple-950 border border-purple-800 text-purple-300 text-[8px] px-2 py-0.5 rounded-full font-mono font-bold uppercase tracking-wider">
+              Persistência
+            </span>
+          </div>
+
+          <p className="text-[10px] text-slate-400 leading-relaxed">
+            Salve os filtros de projetos e a visibilidade dos talhões ativos de <strong className="text-slate-200">{farm?.name}</strong> para que sejam carregados de forma idêntica no próximo acesso.
+          </p>
+
+          <div className="flex gap-2">
+            <button
+              onClick={handleSaveDisplayConfig}
+              className="flex-1 py-1.5 px-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[10px] uppercase tracking-wider rounded-md cursor-pointer transition-colors flex items-center justify-center gap-1.5 shadow-xs"
+              title="Salvar quais talhes estão ativos/ocultos e os projetos de cada um"
+            >
+              <Database className="w-3.5 h-3.5" />
+              <span>Salvar Exibição</span>
+            </button>
+
+            <button
+              onClick={handleRestoreDisplayConfig}
+              className="flex-1 py-1.5 px-2.5 bg-slate-800 hover:bg-slate-750 text-slate-200 font-bold text-[10px] uppercase tracking-wider rounded-md cursor-pointer transition-colors flex items-center justify-center gap-1.5 border border-slate-705"
+              title="Recarregar a última exibição salva para esta fazenda"
+            >
+              <Compass className="w-3.5 h-3.5 text-slate-300 animate-pulse" />
+              <span>Restaurar</span>
+            </button>
+          </div>
+
+          {/* Status Display area */}
+          <div className="flex items-center justify-between text-[9px] text-slate-500 font-mono">
+            <span>
+              {lastSavedDate ? (
+                <>
+                  Salvo em: <strong className="text-slate-350">{lastSavedDate}</strong>
+                </>
+              ) : (
+                "Nenhuma configuração salva"
+              )}
+            </span>
+
+            {lastSavedDate && (
+              <button
+                onClick={handleClearDisplayConfig}
+                className="text-rose-400 hover:text-rose-300 hover:underline cursor-pointer"
+                title="Limpar configurações salvas para esse mapa"
+              >
+                Excluir
+              </button>
+            )}
+          </div>
+
+          {saveStatus && (
+            <div className={`text-center py-1 rounded text-[9px] font-bold transition-all duration-300 ${
+              saveStatus === 'Sucesso' ? 'bg-emerald-950/80 text-emerald-400 border border-emerald-900' :
+              saveStatus === 'Restaurado' ? 'bg-purple-950/80 text-purple-400 border border-purple-900' :
+              saveStatus === 'Limpo' ? 'bg-amber-950/80 text-amber-400 border border-amber-900' :
+              saveStatus === 'Nenhum salvo' ? 'bg-slate-800 text-slate-300 border border-slate-700' :
+              'bg-rose-950/80 text-rose-400 border border-rose-900'
+            }`}>
+              {saveStatus === 'Sucesso' && '✓ Exibição salva com sucesso!'}
+              {saveStatus === 'Restaurado' && '✓ Exibição restaurada de seu backup!'}
+              {saveStatus === 'Limpo' && 'Instalação de exibição limpa com sucesso.'}
+              {saveStatus === 'Nenhum salvo' && 'Nenhum backup encontrado para esta fazenda.'}
+              {saveStatus === 'Erro' && 'Erro ao processar persistência de exibição.'}
+            </div>
+          )}
         </div>
 
         {/* Plots List and select dropdown */}

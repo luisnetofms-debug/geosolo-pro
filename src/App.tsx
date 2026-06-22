@@ -20,6 +20,7 @@ import LabResultsManager from './components/LabResultsManager';
 import AIPanel, { calculateAutoRecs } from './components/AIPanel';
 import FertilityAndMaps from './components/FertilityAndMaps';
 import PropertyMap from './components/PropertyMap';
+import SystemBackup from './components/SystemBackup';
 import { downloadGISZip } from './utils/fileExporter';
 import { 
   Sprout, Database, Layers, CheckSquare, Download, 
@@ -67,7 +68,8 @@ export default function App() {
   const [activePlotId, setActivePlotId] = useState<string>('plot-1');
   const [activeMonthYear, setActiveMonthYear] = useState<string>('05/2026');
   const [offlineMode, setOfflineMode] = useState<boolean>(false);
-  const [activeTab, setActiveTab] = useState<'clients' | 'field_station' | 'lab_results' | 'ai_panel' | 'fertility_maps' | 'property_map'>('clients');
+  const [activeTab, setActiveTab] = useState<'clients' | 'field_station' | 'lab_results' | 'ai_panel' | 'fertility_maps' | 'property_map' | 'system_backup'>('clients');
+  const [systemMenuOpen, setSystemMenuOpen] = useState<boolean>(true);
   const [globalDesiredV2, setGlobalDesiredV2] = useState<number>(70);
   const [globalPrnt, setGlobalPrnt] = useState<number>(80);
   const [globalMinDose, setGlobalMinDose] = useState<number>(0.5);
@@ -811,6 +813,146 @@ export default function App() {
     }
   };
 
+  const handleRestoreBackup = async (backupData: any) => {
+    try {
+      const collectionsToRestore = [
+        { key: 'clients', data: backupData.clients },
+        { key: 'farms', data: backupData.farms },
+        { key: 'plots', data: backupData.plots },
+        { key: 'plotPeriods', data: backupData.plotPeriods },
+        { key: 'samplingPoints', data: backupData.samplingPoints },
+        { key: 'projects', data: backupData.projects },
+      ];
+
+      for (const col of collectionsToRestore) {
+        if (col.data && Array.isArray(col.data)) {
+          // Delete current documents in Firestore for this collection to ensure precise restore
+          const snap = await getDocs(collection(db, col.key));
+          const deleteChunks = [];
+          let currentBatch = writeBatch(db);
+          let count = 0;
+
+          snap.forEach(docSnap => {
+            currentBatch.delete(docSnap.ref);
+            count++;
+            if (count >= 400) {
+              deleteChunks.push(currentBatch.commit());
+              currentBatch = writeBatch(db);
+              count = 0;
+            }
+          });
+          if (count > 0) {
+            deleteChunks.push(currentBatch.commit());
+          }
+          await Promise.all(deleteChunks);
+
+          // Now insert the new documents
+          const insertChunks = [];
+          let insertBatch = writeBatch(db);
+          let icount = 0;
+
+          col.data.forEach((item: any) => {
+            if (!item.id) return;
+            insertBatch.set(doc(db, col.key, item.id), removeUndefined(item));
+            icount++;
+            if (icount >= 400) {
+              insertChunks.push(insertBatch.commit());
+              insertBatch = writeBatch(db);
+              icount = 0;
+            }
+          });
+          if (icount > 0) {
+            insertChunks.push(insertBatch.commit());
+          }
+          await Promise.all(insertChunks);
+        }
+      }
+
+      // Reset active talhão and month selection pointers
+      if (backupData.plots && backupData.plots.length > 0) {
+        setActivePlotId(backupData.plots[0].id);
+      }
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, 'backup_restore');
+      throw error;
+    }
+  };
+
+  const handleResetDatabaseToStaticDefaults = async () => {
+    try {
+      // Clear all major collections first
+      const collectionsToClear = ['clients', 'farms', 'plots', 'plotPeriods', 'samplingPoints', 'projects'];
+      for (const colName of collectionsToClear) {
+        const snap = await getDocs(collection(db, colName));
+        const deleteChunks = [];
+        let currentBatch = writeBatch(db);
+        let count = 0;
+
+        snap.forEach(docSnap => {
+          currentBatch.delete(docSnap.ref);
+          count++;
+          if (count >= 400) {
+            deleteChunks.push(currentBatch.commit());
+            currentBatch = writeBatch(db);
+            count = 0;
+          }
+        });
+        if (count > 0) {
+          deleteChunks.push(currentBatch.commit());
+        }
+        await Promise.all(deleteChunks);
+      }
+
+      // Now Seed initial data
+      const seedBatch = writeBatch(db);
+      INITIAL_CLIENTS.forEach(cli => {
+        seedBatch.set(doc(db, 'clients', cli.id), removeUndefined(cli));
+      });
+      INITIAL_FARMS.forEach(f => {
+        seedBatch.set(doc(db, 'farms', f.id), removeUndefined(f));
+      });
+      INITIAL_PLOTS.forEach(p => {
+        seedBatch.set(doc(db, 'plots', p.id), removeUndefined(p));
+      });
+      INITIAL_SAMPLING_POINTS.forEach(pt => {
+        seedBatch.set(doc(db, 'samplingPoints', pt.id), removeUndefined(pt));
+      });
+      INITIAL_PROJECTS.forEach(proj => {
+        seedBatch.set(doc(db, 'projects', proj.id), removeUndefined(proj));
+      });
+
+      // Default periods
+      const defaultPeriods: PlotPeriod[] = [
+        {
+          id: 'period-1',
+          plotId: 'plot-1',
+          monthYear: '05/2026',
+          cropType: 'Soja',
+          notes: 'Amostragem Principal de Outono',
+          creationDate: '2026-05-18T18:00:00Z'
+        },
+        {
+          id: 'period-2',
+          plotId: 'plot-2',
+          monthYear: '05/2026',
+          cropType: 'Milho',
+          notes: 'Safrinha e cobertura',
+          creationDate: '2026-05-18T18:00:00Z'
+        }
+      ];
+      defaultPeriods.forEach(p => {
+        seedBatch.set(doc(db, 'plotPeriods', p.id), removeUndefined(p));
+      });
+
+      await seedBatch.commit();
+      setActivePlotId('plot-1');
+      setActiveMonthYear('05/2026');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, 'database_reset');
+      throw error;
+    }
+  };
+
   // Export Zip trigger
   const handleExportZippedGisPayload = async () => {
     if (!activeClient || !activeFarm || !activePlot) return;
@@ -901,6 +1043,43 @@ export default function App() {
             <span className={`w-1.5 h-1.5 rounded-full ${activeTab === 'property_map' ? 'bg-emerald-400 scale-125' : 'bg-emerald-400'}`}></span>
             Mapa de Propriedades
           </button>
+
+          <div className="px-3 py-2 mt-4 text-[10px] font-bold text-slate-500 uppercase tracking-wider">Configuração</div>
+          <div className="space-y-1">
+            <button 
+              onClick={() => {
+                setSystemMenuOpen(!systemMenuOpen);
+                setActiveTab('system_backup');
+              }}
+              className={`w-full flex items-center justify-between px-3 py-2 rounded-md transition-all text-xs font-semibold cursor-pointer text-left ${
+                activeTab === 'system_backup' 
+                  ? 'bg-slate-800 text-white border-l-2 border-purple-500' 
+                  : 'text-slate-300 hover:text-white hover:bg-slate-800/85'
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                <span className={`w-1.5 h-1.5 rounded-full ${activeTab === 'system_backup' ? 'bg-purple-400 scale-125' : 'bg-purple-400'}`}></span>
+                <span>Sistema</span>
+              </div>
+              <span className="text-[10px] text-slate-400">{systemMenuOpen ? '▼' : '▶'}</span>
+            </button>
+            
+            {systemMenuOpen && (
+              <div className="pl-3.5 space-y-1">
+                <button
+                  onClick={() => setActiveTab('system_backup')}
+                  className={`w-full flex items-center gap-2.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer text-left ${
+                    activeTab === 'system_backup'
+                      ? 'text-purple-300 bg-slate-800/60'
+                      : 'text-slate-400 hover:text-white hover:bg-slate-800/40'
+                  }`}
+                >
+                  <span className="text-purple-405 font-mono">⛁</span>
+                  <span>Backup</span>
+                </button>
+              </div>
+            )}
+          </div>
         </nav>
 
         <div className="p-4 mt-auto bg-slate-900 border-t border-slate-800">
@@ -1027,6 +1206,19 @@ export default function App() {
           >
             <Layers className="w-3.5 h-3.5 shrink-0" />
             <span>Mapa de Propriedades</span>
+          </button>
+
+          <button
+            id="mobile-tab-system-backup"
+            onClick={() => setActiveTab('system_backup')}
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition-all cursor-pointer ${
+              activeTab === 'system_backup'
+                ? 'bg-purple-50 text-purple-700 border border-purple-200 shadow-sm'
+                : 'bg-slate-50 text-slate-650 hover:bg-slate-100 border border-transparent'
+            }`}
+          >
+            <Database className="w-3.5 h-3.5 shrink-0 text-purple-400" />
+            <span>Sistema</span>
           </button>
         </div>
 
@@ -1253,6 +1445,26 @@ export default function App() {
                 }}
                 onSelectTab={setActiveTab}
                 activePlotId={activePlotId}
+              />
+            </section>
+          )}
+
+          {activeTab === 'system_backup' && (
+            <section id="system-backup-section" className="space-y-2.5 scroll-mt-20">
+              <div className="flex items-center gap-2">
+                <CheckSquare className="w-4 h-4 text-purple-500" />
+                <h3 className="text-[11px] uppercase font-extrabold tracking-wider text-slate-400 font-heading">7. Sistema e Segurança</h3>
+              </div>
+              <SystemBackup
+                clients={clients}
+                farms={farms}
+                plots={plots}
+                plotPeriods={plotPeriods}
+                samplingPoints={samplingPoints}
+                projects={projects}
+                dbStatus={dbStatus}
+                onRestoreBackup={handleRestoreBackup}
+                onResetDatabaseToStaticDefaults={handleResetDatabaseToStaticDefaults}
               />
             </section>
           )}
