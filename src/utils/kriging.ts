@@ -351,7 +351,7 @@ export function getFertilityColor(
     if (value < 12) return 'rgba(245, 158, 11, 0.75)';
     return 'rgba(16, 185, 129, 0.75)';
   }
-  if (variable === 'Al') {
+  if (variable === 'Al' || variable === 'al') {
     // Alumínio is toxic, so HIGH is BAD (Red) and LOW is GOOD (Green)
     if (value > 5.0) return 'rgba(239, 68, 68, 0.75)'; // High is bad
     if (value > 2.0) return 'rgba(245, 158, 11, 0.75)';

@@ -103,6 +103,85 @@ export default function FertilityAndMaps({
   const [selectedPoint, setSelectedPoint] = useState<SamplingPoint | null>(null);
   const [mapSource, setMapSource] = useState<'kriging' | 'zonas'>('kriging');
 
+  // Soil Level customizable thresholds (e.g. MO: low 0.5, high 1.3 as requested)
+  const [customThresholds, setCustomThresholds] = useState<Record<string, { low: number; high: number }>>(() => {
+    const initial: Record<string, { low: number; high: number }> = {};
+    Object.keys(FERTILITY_THRESHOLDS).forEach((key) => {
+      const standard = FERTILITY_THRESHOLDS[key as keyof typeof FERTILITY_THRESHOLDS];
+      if (key === 'MO' || key === 'mo') {
+        initial[key] = { low: 0.5, high: 1.3 };
+      } else {
+        initial[key] = { low: standard.low, high: standard.medium || standard.high };
+      }
+    });
+    return initial;
+  });
+
+  // Customizable colors for soil levels (Crítico, Equilibrado, Adequado)
+  const [customColors, setCustomColors] = useState<{ critico: string; equilibrado: string; adequado: string }>({
+    critico: '#ef4444',
+    equilibrado: '#f59e0b',
+    adequado: '#10b981'
+  });
+
+  const getVariableControlMeta = (variable: string) => {
+    switch (variable) {
+      case 'pH':
+      case 'ph_cacl2':
+      case 'ph_h2o':
+      case 'ph_kcl':
+        return { min: 3.0, max: 9.0, step: 0.1 };
+      case 'MO':
+      case 'mo':
+        return { min: 0.0, max: 8.0, step: 0.1 };
+      case 'P':
+      case 'p_meh':
+      case 'p_res':
+      case 'p_rem':
+        return { min: 0, max: 100, step: 1 };
+      case 'K':
+      case 'k':
+        return { min: 0.0, max: 15.0, step: 0.1 };
+      case 'Ca':
+      case 'ca':
+        return { min: 0, max: 150, step: 1 };
+      case 'Mg':
+      case 'mg':
+        return { min: 0, max: 50, step: 1 };
+      case 'Al':
+      case 'al':
+        return { min: 0.0, max: 20.0, step: 0.1 };
+      default:
+        return { min: 0, max: 100, step: 0.1 };
+    }
+  };
+
+  const getCustomFertilityColor = (value: number, variable: string) => {
+    const thresh = customThresholds[variable] || { low: 1.5, high: 3.0 };
+    const low = thresh.low;
+    const high = thresh.high;
+
+    // Helper to convert hex to rgba
+    const hexToRgba = (hex: string, alpha: number = 0.75) => {
+      const r = parseInt(hex.slice(1, 3), 16);
+      const g = parseInt(hex.slice(3, 5), 16);
+      const b = parseInt(hex.slice(5, 7), 16);
+      return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    };
+
+    if (variable === 'Al' || variable === 'al') {
+      // Toxic: higher values are bad (critico), lower are good (adequado)
+      if (value > high) return hexToRgba(customColors.critico);
+      if (value > low) return hexToRgba(customColors.equilibrado);
+      return hexToRgba(customColors.adequado);
+    } else {
+      // Normal: lower values are bad (critico), higher are good (adequado)
+      if (value < low) return hexToRgba(customColors.critico);
+      if (value < high) return hexToRgba(customColors.equilibrado);
+      return hexToRgba(customColors.adequado);
+    }
+  };
+
   const v2Desired = propDesiredV2 !== undefined ? propDesiredV2 : localDesiredV2;
   const setV2Desired = propSetDesiredV2 || setLocalDesiredV2;
   const prnt = propPrnt !== undefined ? propPrnt : localPrnt;
@@ -396,6 +475,42 @@ export default function FertilityAndMaps({
     };
   }, [spatialBoundingBox, userCellSizeM]);
 
+  // Calcula as dimensões perfeitas do canvas para manter a proporção real do talhão (sem distorção)
+  const canvasDimensions = useMemo(() => {
+    const { minLat, maxLat, minLng, maxLng, latSpan, lngSpan } = spatialBoundingBox;
+    if (latSpan === 0 || lngSpan === 0) {
+      return { width: 600, height: 320 };
+    }
+    
+    const refLat = (minLat + maxLat) / 2;
+    const dx = Math.abs(lngSpan * 111320 * Math.cos(refLat * Math.PI / 180));
+    const dy = Math.abs(latSpan * 110540);
+
+    const maxWidth = 600;
+    const maxHeight = 350;
+    
+    const boxAspect = dx / dy;
+    const containerAspect = maxWidth / maxHeight;
+    
+    let w = maxWidth;
+    let h = maxHeight;
+    
+    if (boxAspect > containerAspect) {
+      // Limitado pela largura
+      w = maxWidth;
+      h = Math.round(maxWidth / boxAspect);
+    } else {
+      // Limitado pela altura
+      h = maxHeight;
+      w = Math.round(maxHeight * boxAspect);
+    }
+    
+    return {
+      width: Math.max(150, w),
+      height: Math.max(150, h)
+    };
+  }, [spatialBoundingBox]);
+
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
@@ -553,7 +668,7 @@ export default function FertilityAndMaps({
           val = gridRes.data[r][c];
         }
 
-        const color = isLimingTab ? getProductColor(val) : getFertilityColor(val, selectedVariable);
+        const color = isLimingTab ? getProductColor(val) : getCustomFertilityColor(val, selectedVariable);
 
         ctx.fillStyle = color;
         // Drawing slightly overlapping cell blocks to avoid grid spacing line artifacts
@@ -585,7 +700,71 @@ export default function FertilityAndMaps({
       ctx.setLineDash([]);
       ctx.stroke();
     }
-  }, [activeTab, pointsWithResults, pointsWithLiming, selectedVariable, selectedProduct, plot.boundaryPoints, spatialBoundingBox, cellDimensions, mapSource]);
+
+    // 4. Desenhar os furos reais de amostragem sobre o mapa
+    activePointsData.forEach((p) => {
+      const { x, y } = getCanvasXY(p.lat, p.lng);
+      
+      // Desenha fundo com sombra para os furos
+      ctx.beginPath();
+      ctx.arc(x, y, 9, 0, 2 * Math.PI);
+      ctx.fillStyle = '#ffffff';
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.25)';
+      ctx.shadowBlur = 4;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 2;
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 0;
+
+      // Círculo interno colorido
+      ctx.beginPath();
+      ctx.arc(x, y, 7.5, 0, 2 * Math.PI);
+      let pValue = 0;
+      if (isLimingTab) {
+        pValue = getProductDose(p, plot.cropType, selectedProduct, v2Desired, prnt);
+      } else {
+        const rawVal = p.results?.[selectedVariable];
+        pValue = typeof rawVal === 'number' ? rawVal : (rawVal && !isNaN(parseFloat(String(rawVal))) ? parseFloat(String(rawVal)) : 0);
+      }
+      ctx.fillStyle = isLimingTab ? getProductColor(pValue) : getCustomFertilityColor(pValue, selectedVariable);
+      ctx.fill();
+
+      // Borda preta fina do círculo
+      ctx.strokeStyle = '#0f172a';
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+
+      // Número do furo centralizado
+      ctx.font = 'bold 8px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      
+      let textCol = '#ffffff';
+      if (!isLimingTab) {
+        const thresh = customThresholds[selectedVariable] || { low: 1.5, high: 3.0 };
+        const low = thresh.low;
+        const high = thresh.high;
+        if (selectedVariable !== 'Al' && selectedVariable !== 'al') {
+          if (pValue >= low && pValue < high) {
+            textCol = '#0f172a'; // Se equilibrado, usa texto escuro
+          }
+        } else {
+          if (pValue > low && pValue <= high) {
+            textCol = '#0f172a';
+          }
+        }
+      } else {
+        if (pValue < 2.0) {
+          textCol = '#0f172a';
+        }
+      }
+      
+      ctx.fillStyle = textCol;
+      ctx.fillText(p.pointNumber.toString(), x, y + 0.5);
+    });
+  }, [activeTab, pointsWithResults, pointsWithLiming, selectedVariable, selectedProduct, plot.boundaryPoints, spatialBoundingBox, cellDimensions, mapSource, customThresholds, customColors, canvasDimensions]);
 
   return (
     <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-6 space-y-6" id="fertility-maps-tab">
@@ -1032,38 +1211,306 @@ export default function FertilityAndMaps({
                     </button>
                   </div>
                   
-                  {/* Legend indicator of marker weights */}
-                  <div className="flex gap-4 text-[9px] font-bold text-slate-500 bg-slate-50 border border-slate-150 px-2 py-1.5 rounded-lg">
-                    <div className="flex items-center gap-1">
-                      <Circle className="w-3 h-3 fill-rose-500 text-rose-500" />
-                      <span>Crítico</span>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <Circle className="w-3 h-3 fill-amber-400 text-amber-400" />
-                      <span>Equilibrado</span>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <Circle className="w-3 h-3 fill-emerald-500 text-emerald-500" />
-                      <span>Adequado / Ótimo</span>
-                    </div>
+                  {/* Legend indicator of marker weights with dynamic colors */}
+                  <div className="flex flex-wrap gap-3 text-[9px] font-bold text-slate-600 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-lg">
+                    {selectedVariable === 'Al' || selectedVariable === 'al' ? (
+                      <>
+                        <div className="flex items-center gap-1.5">
+                          <Circle className="w-3 h-3" style={{ fill: customColors.adequado, color: customColors.adequado }} />
+                          <span>Adequado ({"<="} {customThresholds[selectedVariable]?.low} {FERTILITY_THRESHOLDS[selectedVariable]?.unit})</span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <Circle className="w-3 h-3" style={{ fill: customColors.equilibrado, color: customColors.equilibrado }} />
+                          <span>Equilibrado ({customThresholds[selectedVariable]?.low} - {customThresholds[selectedVariable]?.high} {FERTILITY_THRESHOLDS[selectedVariable]?.unit})</span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <Circle className="w-3 h-3" style={{ fill: customColors.critico, color: customColors.critico }} />
+                          <span>Crítico ({">"} {customThresholds[selectedVariable]?.high} {FERTILITY_THRESHOLDS[selectedVariable]?.unit})</span>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="flex items-center gap-1.5">
+                          <Circle className="w-3 h-3" style={{ fill: customColors.critico, color: customColors.critico }} />
+                          <span>Crítico ({"<"} {customThresholds[selectedVariable]?.low} {FERTILITY_THRESHOLDS[selectedVariable]?.unit})</span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <Circle className="w-3 h-3" style={{ fill: customColors.equilibrado, color: customColors.equilibrado }} />
+                          <span>Equilibrado ({customThresholds[selectedVariable]?.low} - {customThresholds[selectedVariable]?.high} {FERTILITY_THRESHOLDS[selectedVariable]?.unit})</span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <Circle className="w-3 h-3" style={{ fill: customColors.adequado, color: customColors.adequado }} />
+                          <span>Adequado ({">="} {customThresholds[selectedVariable]?.high} {FERTILITY_THRESHOLDS[selectedVariable]?.unit})</span>
+                        </div>
+                      </>
+                    )}
                   </div>
                 </div>
 
                 {/* 2D Point coordinate canvas container translating lat/lng space directly */}
-                <div className="relative w-full h-80 flex-1 bg-slate-50/50 border border-slate-100 rounded-lg overflow-hidden flex items-center justify-center">
+                <div className="relative w-full h-80 flex-1 bg-slate-50 border border-slate-100 rounded-lg overflow-hidden flex items-center justify-center p-3">
                   
                   {/* The Kriging & Boundary Overlay Canvas */}
                   <canvas
                     ref={canvasRef}
-                    width={600}
-                    height={320}
-                    className="absolute inset-0 w-full h-full object-fill rounded-lg"
+                    width={canvasDimensions.width}
+                    height={canvasDimensions.height}
+                    style={{
+                      width: `${canvasDimensions.width}px`,
+                      height: `${canvasDimensions.height}px`,
+                      maxWidth: '100%',
+                      maxHeight: '100%',
+                    }}
+                    className="rounded-lg shadow-xs bg-white"
                   />
                 </div>
 
                 <p className="text-[10px] text-slate-400 text-center mt-3 relative z-10">
                   ⚠️ A linha tracejada roxa representa o limite preciso do talhão. O gradiente de cor é gerado dinamicamente via interpolação de krigagem ordinária.
                 </p>
+
+                {/* Dynamic Calibration Panel (Control Bar for Soil Levels & Colors) */}
+                <div className="mt-4 border border-slate-200 rounded-xl p-4 bg-slate-50 relative z-10 space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-150 pb-2">
+                    <div>
+                      <h4 className="text-xs font-extrabold text-slate-800 uppercase tracking-tight flex items-center gap-1.5">
+                        <span>🎛️ Painel de Calibração Agronômica</span>
+                        <span className="text-[10px] bg-indigo-100 text-indigo-700 font-bold px-1.5 py-0.5 rounded uppercase">
+                          {FERTILITY_THRESHOLDS[selectedVariable]?.name}
+                        </span>
+                      </h4>
+                      <p className="text-[10px] text-slate-500 mt-0.5">
+                        Ajuste os valores de corte (nível crítico e adequado) e selecione cores customizadas para o mapa de calor.
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        // Reset to default thresholds of this variable
+                        const std = FERTILITY_THRESHOLDS[selectedVariable];
+                        const isMo = selectedVariable === 'MO' || selectedVariable === 'mo';
+                        setCustomThresholds(prev => ({
+                          ...prev,
+                          [selectedVariable]: {
+                            low: isMo ? 0.5 : std.low,
+                            high: isMo ? 1.3 : (std.medium || std.high)
+                          }
+                        }));
+                        // Reset colors to default
+                        setCustomColors({
+                          critico: '#ef4444',
+                          equilibrado: '#f59e0b',
+                          adequado: '#10b981'
+                        });
+                      }}
+                      className="text-[10px] bg-white border border-slate-200 hover:bg-slate-100 text-slate-600 px-2 py-1 rounded font-bold transition-all cursor-pointer inline-flex items-center gap-1 self-start sm:self-auto"
+                    >
+                      Restaurar Padrão
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
+                    {/* Range Threshold Sliders / Inputs (col-span 7) */}
+                    <div className="md:col-span-7 space-y-3.5">
+                      {/* Limite Crítico ou Adequado 1 */}
+                      <div>
+                        <div className="flex justify-between items-center text-[10px] font-bold text-slate-600 mb-1">
+                          <span className="flex items-center gap-1">
+                            <span 
+                              className="w-2.5 h-2.5 rounded-full inline-block" 
+                              style={{ backgroundColor: (selectedVariable === 'Al' || selectedVariable === 'al') ? customColors.adequado : customColors.critico }} 
+                            />
+                            {(selectedVariable === 'Al' || selectedVariable === 'al') ? 'Limite de Nível Adequado (Até):' : 'Limite de Nível Crítico (Até):'}
+                          </span>
+                          <span className={`font-mono font-extrabold ${(selectedVariable === 'Al' || selectedVariable === 'al') ? 'text-emerald-600' : 'text-rose-600'}`}>
+                            {customThresholds[selectedVariable]?.low ?? 0} {FERTILITY_THRESHOLDS[selectedVariable]?.unit}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="range"
+                            min={getVariableControlMeta(selectedVariable).min}
+                            max={getVariableControlMeta(selectedVariable).max}
+                            step={getVariableControlMeta(selectedVariable).step}
+                            value={customThresholds[selectedVariable]?.low ?? 0}
+                            onChange={(e) => {
+                              const val = parseFloat(e.target.value);
+                              setCustomThresholds(prev => {
+                                const current = prev[selectedVariable] || { low: 0, high: 10 };
+                                // Ensure low doesn't exceed high
+                                const newLow = Math.min(val, current.high - getVariableControlMeta(selectedVariable).step);
+                                return {
+                                  ...prev,
+                                  [selectedVariable]: { ...current, low: parseFloat(newLow.toFixed(2)) }
+                                };
+                              });
+                            }}
+                            className={`w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer ${(selectedVariable === 'Al' || selectedVariable === 'al') ? 'accent-emerald-500' : 'accent-rose-500'}`}
+                          />
+                          <input
+                            type="number"
+                            step={getVariableControlMeta(selectedVariable).step}
+                            value={customThresholds[selectedVariable]?.low ?? 0}
+                            onChange={(e) => {
+                              const val = parseFloat(e.target.value) || 0;
+                              setCustomThresholds(prev => {
+                                const current = prev[selectedVariable] || { low: 0, high: 10 };
+                                const newLow = Math.min(val, current.high);
+                                return {
+                                  ...prev,
+                                  [selectedVariable]: { ...current, low: parseFloat(newLow.toFixed(2)) }
+                                };
+                              });
+                            }}
+                            className="w-16 text-center text-xs font-mono font-bold bg-white border border-slate-200 rounded px-1 py-0.5"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Limite Adequado ou Crítico 2 */}
+                      <div>
+                        <div className="flex justify-between items-center text-[10px] font-bold text-slate-600 mb-1">
+                          <span className="flex items-center gap-1">
+                            <span 
+                              className="w-2.5 h-2.5 rounded-full inline-block" 
+                              style={{ backgroundColor: (selectedVariable === 'Al' || selectedVariable === 'al') ? customColors.critico : customColors.adequado }} 
+                            />
+                            {(selectedVariable === 'Al' || selectedVariable === 'al') ? 'Limite de Nível Crítico (A partir de):' : 'Limite de Nível Adequado (A partir de):'}
+                          </span>
+                          <span className={`font-mono font-extrabold ${(selectedVariable === 'Al' || selectedVariable === 'al') ? 'text-rose-600' : 'text-emerald-600'}`}>
+                            {customThresholds[selectedVariable]?.high ?? 0} {FERTILITY_THRESHOLDS[selectedVariable]?.unit}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="range"
+                            min={getVariableControlMeta(selectedVariable).min}
+                            max={getVariableControlMeta(selectedVariable).max}
+                            step={getVariableControlMeta(selectedVariable).step}
+                            value={customThresholds[selectedVariable]?.high ?? 0}
+                            onChange={(e) => {
+                              const val = parseFloat(e.target.value);
+                              setCustomThresholds(prev => {
+                                const current = prev[selectedVariable] || { low: 0, high: 10 };
+                                // Ensure high is at least low
+                                const newHigh = Math.max(val, current.low + getVariableControlMeta(selectedVariable).step);
+                                return {
+                                  ...prev,
+                                  [selectedVariable]: { ...current, high: parseFloat(newHigh.toFixed(2)) }
+                                };
+                              });
+                            }}
+                            className={`w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer ${(selectedVariable === 'Al' || selectedVariable === 'al') ? 'accent-rose-500' : 'accent-emerald-500'}`}
+                          />
+                          <input
+                            type="number"
+                            step={getVariableControlMeta(selectedVariable).step}
+                            value={customThresholds[selectedVariable]?.high ?? 0}
+                            onChange={(e) => {
+                              const val = parseFloat(e.target.value) || 0;
+                              setCustomThresholds(prev => {
+                                const current = prev[selectedVariable] || { low: 0, high: 10 };
+                                const newHigh = Math.max(val, current.low);
+                                return {
+                                  ...prev,
+                                  [selectedVariable]: { ...current, high: parseFloat(newHigh.toFixed(2)) }
+                                };
+                              });
+                            }}
+                            className="w-16 text-center text-xs font-mono font-bold bg-white border border-slate-200 rounded px-1 py-0.5"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Color Picker inputs (col-span 5) */}
+                    <div className="md:col-span-5 bg-white border border-slate-150 p-3 rounded-lg flex flex-col justify-between gap-3">
+                      <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Paleta de Cores</span>
+                      
+                      <div className="space-y-2">
+                        {/* Crítico */}
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="text-slate-600 font-semibold flex items-center gap-1.5">
+                            <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ backgroundColor: customColors.critico }} />
+                            Crítico:
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="color"
+                              value={customColors.critico}
+                              onChange={(e) => setCustomColors(prev => ({ ...prev, critico: e.target.value }))}
+                              className="w-6 h-6 border-0 p-0 rounded-full cursor-pointer overflow-hidden bg-transparent"
+                            />
+                            <span className="font-mono text-[10px] text-slate-400 uppercase font-bold">{customColors.critico}</span>
+                          </div>
+                        </div>
+
+                        {/* Equilibrado */}
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="text-slate-600 font-semibold flex items-center gap-1.5">
+                            <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ backgroundColor: customColors.equilibrado }} />
+                            Equilibrado:
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="color"
+                              value={customColors.equilibrado}
+                              onChange={(e) => setCustomColors(prev => ({ ...prev, equilibrado: e.target.value }))}
+                              className="w-6 h-6 border-0 p-0 rounded-full cursor-pointer overflow-hidden bg-transparent"
+                            />
+                            <span className="font-mono text-[10px] text-slate-400 uppercase font-bold">{customColors.equilibrado}</span>
+                          </div>
+                        </div>
+
+                        {/* Adequado */}
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="text-slate-600 font-semibold flex items-center gap-1.5">
+                            <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ backgroundColor: customColors.adequado }} />
+                            Adequado:
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="color"
+                              value={customColors.adequado}
+                              onChange={(e) => setCustomColors(prev => ({ ...prev, adequado: e.target.value }))}
+                              className="w-6 h-6 border-0 p-0 rounded-full cursor-pointer overflow-hidden bg-transparent"
+                            />
+                            <span className="font-mono text-[10px] text-slate-400 uppercase font-bold">{customColors.adequado}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Gradient Preview Bar */}
+                  <div className="space-y-1">
+                    <span className="text-[9px] font-extrabold text-slate-400 uppercase tracking-wider block">Gradiente Visual dos Níveis</span>
+                    <div className="relative h-4.5 rounded-md overflow-hidden flex font-sans text-[9px] font-black text-white text-center shadow-xs">
+                      {/* Crítico */}
+                      <div
+                        style={{ backgroundColor: customColors.critico }}
+                        className="flex-1 flex items-center justify-center transition-all duration-300"
+                      >
+                        CRÍTICO ({selectedVariable === 'Al' || selectedVariable === 'al' ? `> ${customThresholds[selectedVariable]?.high}` : `< ${customThresholds[selectedVariable]?.low}`})
+                      </div>
+                      {/* Equilibrado */}
+                      <div
+                        style={{ backgroundColor: customColors.equilibrado }}
+                        className="flex-1 flex items-center justify-center transition-all duration-300 text-slate-900"
+                      >
+                        EQUILIBRADO ({customThresholds[selectedVariable]?.low} - {customThresholds[selectedVariable]?.high})
+                      </div>
+                      {/* Adequado */}
+                      <div
+                        style={{ backgroundColor: customColors.adequado }}
+                        className="flex-1 flex items-center justify-center transition-all duration-300"
+                      >
+                        ADEQUADO ({selectedVariable === 'Al' || selectedVariable === 'al' ? `<= ${customThresholds[selectedVariable]?.low}` : `>= ${customThresholds[selectedVariable]?.high}`})
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
 
             </div>
@@ -1722,12 +2169,18 @@ RESUMO DA RECOMENDAÇÃO DE TAXA VARIÁVEL (EM KG/HA):
                   </div>
 
                   {/* Canvas Render stage for active product */}
-                  <div className="relative w-full h-80 flex-1 bg-slate-50/50 border border-slate-100 rounded-lg overflow-hidden flex items-center justify-center">
+                  <div className="relative w-full h-80 flex-1 bg-slate-50 border border-slate-100 rounded-lg overflow-hidden flex items-center justify-center p-3">
                     <canvas
                       ref={canvasRef}
-                      width={600}
-                      height={320}
-                      className="absolute inset-0 w-full h-full object-fill rounded-lg"
+                      width={canvasDimensions.width}
+                      height={canvasDimensions.height}
+                      style={{
+                        width: `${canvasDimensions.width}px`,
+                        height: `${canvasDimensions.height}px`,
+                        maxWidth: '100%',
+                        maxHeight: '100%',
+                      }}
+                      className="rounded-lg shadow-xs bg-white"
                     />
                   </div>
 
