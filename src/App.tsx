@@ -66,10 +66,35 @@ export default function App() {
   const [projects, setProjects] = useState<Project[]>([]);
 
   // Active Workspace
-  const [activePlotId, setActivePlotId] = useState<string>('');
-  const [activeMonthYear, setActiveMonthYear] = useState<string>('05/2026');
+  const [activePlotId, setActivePlotId] = useState<string>(() => {
+    try {
+      return localStorage.getItem('geosolo_last_saved_plot_id') || '';
+    } catch (_) {
+      return '';
+    }
+  });
+  const [activeMonthYear, setActiveMonthYear] = useState<string>(() => {
+    try {
+      return localStorage.getItem('geosolo_last_saved_month_year') || '05/2026';
+    } catch (_) {
+      return '05/2026';
+    }
+  });
   const [offlineMode, setOfflineMode] = useState<boolean>(false);
-  const [activeTab, setActiveTab] = useState<'clients' | 'field_station' | 'lab_results' | 'ai_panel' | 'fertility_maps' | 'property_map' | 'system_backup' | 'report_print'>('clients');
+  const [activeTab, setActiveTab] = useState<'clients' | 'field_station' | 'lab_results' | 'ai_panel' | 'fertility_maps' | 'property_map' | 'system_backup' | 'report_print'>(() => {
+    try {
+      return (localStorage.getItem('geosolo_last_saved_tab') as any) || 'clients';
+    } catch (_) {
+      return 'clients';
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('geosolo_last_saved_tab', activeTab);
+    } catch (_) {}
+  }, [activeTab]);
+
   const [systemMenuOpen, setSystemMenuOpen] = useState<boolean>(true);
   const [globalDesiredV2, setGlobalDesiredV2] = useState<number>(70);
   const [globalPrnt, setGlobalPrnt] = useState<number>(80);
@@ -126,11 +151,23 @@ export default function App() {
     updateTime();
     const interval = setInterval(updateTime, 1000);
     return () => clearInterval(interval);
-  }, []);  // 1. Connection Health Check & Auto-Seeding if empty
+  }, []);  // 1. Connection Health Check, Auto-Seeding & Snapshot Observers
   useEffect(() => {
     let active = true;
+    let seedingFinished = false;
+    let clientsFired = false;
+    let farmsFired = false;
+    let plotsFired = false;
+    let periodsFired = false;
+    const unsubscribes: (() => void)[] = [];
 
-    async function checkAndSeed() {
+    const checkReady = () => {
+      if (active && seedingFinished && clientsFired && farmsFired && plotsFired && periodsFired) {
+        setDbStatus('connected');
+      }
+    };
+
+    async function checkAndSeedAndConnect() {
       try {
         setDbStatus('connecting');
         // Simple connection diagnostic fetch
@@ -155,9 +192,8 @@ export default function App() {
         await purgeBatch.commit().catch(() => {});
         console.log('Demonstration database records successfully cleared.');
 
-        if (active) {
-          setDbStatus('connected');
-        }
+        seedingFinished = true;
+        checkReady();
       } catch (error) {
         console.error('Erro de conexão ao Firestore ou durante purga:', error);
         if (active) {
@@ -166,15 +202,9 @@ export default function App() {
       }
     }
 
-    checkAndSeed();
+    checkAndSeedAndConnect();
 
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  // 2. Real-time Firebase Firestore OnSnapshot Observers
-  useEffect(() => {
+    // Start snapshot observers immediately so they fetch in parallel
     const unsubClients = onSnapshot(collection(db, 'clients'), (snapshot) => {
       const list: Client[] = [];
       snapshot.forEach(doc => {
@@ -183,9 +213,12 @@ export default function App() {
       if (list.length > 0) {
         setClients(list);
       }
+      clientsFired = true;
+      checkReady();
     }, (error) => {
       handleFirestoreError(error, OperationType.LIST, 'clients');
     });
+    unsubscribes.push(unsubClients);
 
     const unsubFarms = onSnapshot(collection(db, 'farms'), (snapshot) => {
       const list: Farm[] = [];
@@ -195,9 +228,12 @@ export default function App() {
       if (list.length > 0) {
         setFarms(list);
       }
+      farmsFired = true;
+      checkReady();
     }, (error) => {
       handleFirestoreError(error, OperationType.LIST, 'farms');
     });
+    unsubscribes.push(unsubFarms);
 
     const unsubPlots = onSnapshot(collection(db, 'plots'), (snapshot) => {
       const list: Plot[] = [];
@@ -207,9 +243,12 @@ export default function App() {
       if (list.length > 0) {
         setPlots(list);
       }
+      plotsFired = true;
+      checkReady();
     }, (error) => {
       handleFirestoreError(error, OperationType.LIST, 'plots');
     });
+    unsubscribes.push(unsubPlots);
 
     const unsubSamplingPoints = onSnapshot(collection(db, 'samplingPoints'), (snapshot) => {
       const list: SamplingPoint[] = [];
@@ -220,6 +259,7 @@ export default function App() {
     }, (error) => {
       handleFirestoreError(error, OperationType.LIST, 'samplingPoints');
     });
+    unsubscribes.push(unsubSamplingPoints);
 
     const unsubProjects = onSnapshot(collection(db, 'projects'), (snapshot) => {
       const list: Project[] = [];
@@ -230,6 +270,7 @@ export default function App() {
     }, (error) => {
       handleFirestoreError(error, OperationType.LIST, 'projects');
     });
+    unsubscribes.push(unsubProjects);
 
     const unsubPlotPeriods = onSnapshot(collection(db, 'plotPeriods'), (snapshot) => {
       const list: PlotPeriod[] = [];
@@ -237,17 +278,16 @@ export default function App() {
         list.push(doc.data() as PlotPeriod);
       });
       setPlotPeriods(list);
+      periodsFired = true;
+      checkReady();
     }, (error) => {
       handleFirestoreError(error, OperationType.LIST, 'plotPeriods');
     });
+    unsubscribes.push(unsubPlotPeriods);
 
     return () => {
-      unsubClients();
-      unsubFarms();
-      unsubPlots();
-      unsubSamplingPoints();
-      unsubProjects();
-      unsubPlotPeriods();
+      active = false;
+      unsubscribes.forEach(unsub => unsub());
     };
   }, []);
 
@@ -1511,6 +1551,8 @@ export default function App() {
                 }}
                 onSelectTab={setActiveTab}
                 activePlotId={activePlotId}
+                onSelectMonthYear={setActiveMonthYear}
+                dbStatus={dbStatus}
               />
             </section>
           )}

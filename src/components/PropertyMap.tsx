@@ -17,6 +17,8 @@ interface PropertyMapProps {
   onSelectPlot: (plotId: string) => void;
   onSelectTab: (tab: 'clients' | 'field_station' | 'lab_results' | 'ai_panel' | 'fertility_maps' | 'property_map') => void;
   activePlotId?: string;
+  onSelectMonthYear?: (monthYear: string) => void;
+  dbStatus?: string;
 }
 
 export default function PropertyMap({
@@ -28,7 +30,9 @@ export default function PropertyMap({
   activeSoilLayer: initialActiveSoilLayer,
   onSelectPlot,
   onSelectTab,
-  activePlotId: globalActivePlotId
+  activePlotId: globalActivePlotId,
+  onSelectMonthYear,
+  dbStatus
 }: PropertyMapProps) {
   
   // Local active plot selection in Property Map
@@ -52,6 +56,7 @@ export default function PropertyMap({
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const layersGroupRef = useRef<L.FeatureGroup | null>(null);
+  const loadedFarmIdRef = useRef<string | null>(null);
 
   // Filter plots belonging to this farm
   const farmPlots = useMemo(() => {
@@ -59,9 +64,37 @@ export default function PropertyMap({
     return plots.filter(p => p.farmId === farm.id);
   }, [plots, farm]);
 
-  // Load saved configurations on mount / farm change
+  // Determine available projects (monthYears) for each plot
+  const plotAvailablePeriods = useMemo(() => {
+    const map: Record<string, string[]> = {};
+    farmPlots.forEach(plot => {
+      // Get all unique monthYears from sampling points or plotPeriods
+      const periodsFromPoints = Array.from(
+        new Set(
+          samplingPoints
+            .filter(p => p.plotId === plot.id && p.monthYear)
+            .map(p => p.monthYear!)
+        )
+      );
+      
+      const periodsFromProps = plotPeriods
+        .filter(pp => pp.plotId === plot.id)
+        .map(pp => pp.monthYear);
+      
+      const combined = Array.from(new Set([...periodsFromPoints, ...periodsFromProps, '05/2026']));
+      map[plot.id] = combined.sort();
+    });
+    return map;
+  }, [farmPlots, samplingPoints, plotPeriods]);
+
+  // Load saved configurations on mount / farm change (only once per farm)
   useEffect(() => {
-    if (!farm) return;
+    if (dbStatus === 'connecting') return;
+    if (!farm || farmPlots.length === 0) return;
+    
+    // Only load if we haven't loaded for this farm yet
+    if (loadedFarmIdRef.current === farm.id) return;
+    
     try {
       const savedConfigStr = localStorage.getItem(`geosolo_property_map_config_${farm.id}`);
       if (savedConfigStr) {
@@ -84,42 +117,54 @@ export default function PropertyMap({
           } else {
             setLastSavedDate(null);
           }
+          
+          let targetPlotId = '';
+          if (config.selectedPlotId && farmPlots.some(p => p.id === config.selectedPlotId)) {
+            targetPlotId = config.selectedPlotId;
+          } else if (globalActivePlotId && farmPlots.some(p => p.id === globalActivePlotId)) {
+            targetPlotId = globalActivePlotId;
+          } else {
+            targetPlotId = farmPlots[0].id;
+          }
+          
+          setSelectedPlotId(targetPlotId);
+          onSelectPlot(targetPlotId);
+          
+          const savedProj = config.plotSelectedProjects?.[targetPlotId];
+          if (savedProj) {
+            onSelectMonthYear?.(savedProj);
+          } else {
+            const available = plotAvailablePeriods[targetPlotId] || [];
+            const defaultProj = available.includes('05/2026') ? '05/2026' : (available[0] || '05/2026');
+            onSelectMonthYear?.(defaultProj);
+          }
         }
       } else {
+        // No saved config
         setLastSavedDate(null);
+        
+        let targetPlotId = '';
+        if (globalActivePlotId && farmPlots.some(p => p.id === globalActivePlotId)) {
+          targetPlotId = globalActivePlotId;
+        } else {
+          targetPlotId = farmPlots[0].id;
+        }
+        
+        setSelectedPlotId(targetPlotId);
+        onSelectPlot(targetPlotId);
+        
+        const available = plotAvailablePeriods[targetPlotId] || [];
+        const defaultProj = available.includes('05/2026') ? '05/2026' : (available[0] || '05/2026');
+        onSelectMonthYear?.(defaultProj);
       }
+      
+      // Successfully loaded config for this farm
+      loadedFarmIdRef.current = farm.id;
     } catch (err) {
       console.error('Failed to load saved property map configuration:', err);
       setLastSavedDate(null);
     }
-  }, [farm]);
-
-  // Set initial selected plot once farm plots load
-  useEffect(() => {
-    if (farmPlots.length > 0) {
-      // Check if we loaded a saved plot from localStorage first
-      let loadSavedId = '';
-      if (farm) {
-        try {
-          const savedConfigStr = localStorage.getItem(`geosolo_property_map_config_${farm.id}`);
-          if (savedConfigStr) {
-            const config = JSON.parse(savedConfigStr);
-            if (config && config.selectedPlotId && farmPlots.some(p => p.id === config.selectedPlotId)) {
-              loadSavedId = config.selectedPlotId;
-            }
-          }
-        } catch (_) {}
-      }
-
-      if (loadSavedId) {
-        setSelectedPlotId(loadSavedId);
-      } else if (globalActivePlotId && farmPlots.some(p => p.id === globalActivePlotId)) {
-        setSelectedPlotId(globalActivePlotId);
-      } else if (!selectedPlotId || !farmPlots.some(p => p.id === selectedPlotId)) {
-        setSelectedPlotId(farmPlots[0].id);
-      }
-    }
-  }, [farmPlots, globalActivePlotId, farm]);
+  }, [farm, farmPlots, globalActivePlotId, onSelectPlot, onSelectMonthYear, plotAvailablePeriods, dbStatus]);
 
   // Initialize visibility state for plots
   useEffect(() => {
@@ -150,6 +195,14 @@ export default function PropertyMap({
         savedAt: new Date().toISOString()
       };
       localStorage.setItem(`geosolo_property_map_config_${farm.id}`, JSON.stringify(config));
+      
+      // Save globally for App.tsx startup:
+      if (selectedPlotId) {
+        localStorage.setItem('geosolo_last_saved_plot_id', selectedPlotId);
+        const chosenProj = plotSelectedProjects[selectedPlotId] || '05/2026';
+        localStorage.setItem('geosolo_last_saved_month_year', chosenProj);
+      }
+      
       setLastSavedDate(new Date().toLocaleString('pt-BR'));
       setSaveStatus('Sucesso');
       setTimeout(() => setSaveStatus(null), 3000);
@@ -173,6 +226,10 @@ export default function PropertyMap({
           if (config.mapVariable) setMapVariable(config.mapVariable);
           if (config.selectedPlotId && farmPlots.some(p => p.id === config.selectedPlotId)) {
             setSelectedPlotId(config.selectedPlotId);
+            onSelectPlot(config.selectedPlotId);
+            if (config.plotSelectedProjects && config.plotSelectedProjects[config.selectedPlotId] && onSelectMonthYear) {
+              onSelectMonthYear(config.plotSelectedProjects[config.selectedPlotId]);
+            }
           }
           setSaveStatus('Restaurado');
           setTimeout(() => setSaveStatus(null), 3000);
@@ -199,29 +256,6 @@ export default function PropertyMap({
       console.error(e);
     }
   };
-
-  // Determine available projects (monthYears) for each plot
-  const plotAvailablePeriods = useMemo(() => {
-    const map: Record<string, string[]> = {};
-    farmPlots.forEach(plot => {
-      // Get all unique monthYears from sampling points or plotPeriods
-      const periodsFromPoints = Array.from(
-        new Set(
-          samplingPoints
-            .filter(p => p.plotId === plot.id && p.monthYear)
-            .map(p => p.monthYear!)
-        )
-      );
-      
-      const periodsFromProps = plotPeriods
-        .filter(pp => pp.plotId === plot.id)
-        .map(pp => pp.monthYear);
-      
-      const combined = Array.from(new Set([...periodsFromPoints, ...periodsFromProps, '05/2026']));
-      map[plot.id] = combined.sort();
-    });
-    return map;
-  }, [farmPlots, samplingPoints, plotPeriods]);
 
   // Initialize selected project defaults for each plot
   useEffect(() => {
@@ -266,10 +300,13 @@ export default function PropertyMap({
       ptsForPlot.forEach(p => {
         // If they ask for deep layers, look for subsamples. Otherwise, fallback to p.results
         let resultsToUse: SoilLabResults | undefined = undefined;
-        if (activeLayer === '0-20cm') {
-          resultsToUse = p.results;
+        const normActiveLayer = activeLayer.replace(/\s+/g, '').toLowerCase();
+
+        if (normActiveLayer === '0-20cm') {
+          const sub = p.subsamples?.find(s => s.depth.replace(/\s+/g, '').toLowerCase() === '0-20cm');
+          resultsToUse = sub?.results || p.results;
         } else if (p.subsamples) {
-          const sub = p.subsamples.find(s => s.depth === activeLayer);
+          const sub = p.subsamples.find(s => s.depth.replace(/\s+/g, '').toLowerCase() === normActiveLayer);
           resultsToUse = sub?.results;
         }
 
@@ -456,8 +493,12 @@ export default function PropertyMap({
 
       poly.on('click', () => {
         setSelectedPlotId(plot.id);
-        // Cohesively align the global App.tsx selected plot too!
+        // Cohesively align the global App.tsx selected plot and project too!
         onSelectPlot(plot.id);
+        const plotProj = plotSelectedProjects[plot.id] || '05/2026';
+        if (onSelectMonthYear) {
+          onSelectMonthYear(plotProj);
+        }
       });
 
       const variableLabel = thresholds?.name || String(mapVariable).toUpperCase();
@@ -735,6 +776,9 @@ export default function PropertyMap({
                   onClick={() => {
                     setSelectedPlotId(plot.id);
                     onSelectPlot(plot.id);
+                    if (onSelectMonthYear) {
+                      onSelectMonthYear(plotProj);
+                    }
                   }}
                   className={`p-3 rounded-lg border transition-all text-left cursor-pointer space-y-2.5 relative flex flex-col justify-between ${
                     isSelected 
@@ -801,7 +845,11 @@ export default function PropertyMap({
                         onClick={(e) => e.stopPropagation()} // Avoid triggering plot selection
                         onChange={(e) => {
                           e.stopPropagation();
-                          setPlotSelectedProjects(prev => ({ ...prev, [plot.id]: e.target.value }));
+                          const val = e.target.value;
+                          setPlotSelectedProjects(prev => ({ ...prev, [plot.id]: val }));
+                          if (plot.id === selectedPlotId && onSelectMonthYear) {
+                            onSelectMonthYear(val);
+                          }
                         }}
                         className="text-[10px] bg-white border border-slate-225 rounded px-1.5 py-0.5 font-bold text-slate-700 cursor-pointer focus:ring-1 focus:ring-blue-500"
                       >

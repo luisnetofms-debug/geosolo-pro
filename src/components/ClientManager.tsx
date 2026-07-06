@@ -52,6 +52,36 @@ export default function ClientManager({
   const [selectedClientId, setSelectedClientId] = useState<string>(clients[0]?.id || '');
   const [selectedFarmId, setSelectedFarmId] = useState<string>(farms[0]?.id || '');
 
+  const lastSyncedPlotIdRef = React.useRef<string | null>(null);
+
+  // Synchronize expanded client and farm when activePlotId actually changes
+  React.useEffect(() => {
+    if (activePlotId && plots.length > 0 && farms.length > 0) {
+      if (activePlotId !== lastSyncedPlotIdRef.current) {
+        const activePlot = plots.find(p => p.id === activePlotId);
+        if (activePlot) {
+          const activeFarm = farms.find(f => f.id === activePlot.farmId);
+          if (activeFarm) {
+            setSelectedClientId(activeFarm.clientId);
+            setSelectedFarmId(activeFarm.id);
+            lastSyncedPlotIdRef.current = activePlotId;
+          }
+        }
+      }
+    }
+  }, [activePlotId, plots, farms]);
+
+  // Handle fallback default selection if list loaded and nothing is selected
+  React.useEffect(() => {
+    if (clients.length > 0 && !selectedClientId) {
+      setSelectedClientId(clients[0].id);
+      const firstFarm = farms.find(f => f.clientId === clients[0].id);
+      if (firstFarm) {
+        setSelectedFarmId(firstFarm.id);
+      }
+    }
+  }, [clients, selectedClientId, farms]);
+
   // Plot Period states
   const [showPeriodForm, setShowPeriodForm] = useState<string | null>(null);
   const [newPeriodMonthYear, setNewPeriodMonthYear] = useState('');

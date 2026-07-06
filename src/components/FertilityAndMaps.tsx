@@ -369,9 +369,10 @@ export default function FertilityAndMaps({
       let MOSum = 0;
       let PSum = 0;
       let count = 0;
+      const normalizedLayer = layer.replace(/\s+/g, '').toLowerCase();
 
       points.forEach(p => {
-        const matchedSub = p.subsamples?.find(s => s.depth === layer);
+        const matchedSub = p.subsamples?.find(s => s.depth.replace(/\s+/g, '').toLowerCase() === normalizedLayer);
         if (matchedSub && matchedSub.isCollected && matchedSub.results) {
           pHSum += matchedSub.results.pH;
           MOSum += matchedSub.results.MO;
@@ -382,10 +383,10 @@ export default function FertilityAndMaps({
 
       // Simple heuristic if layer doesn't have live collections yet to render standard trendlines
       if (count === 0 && averages) {
-        const factor = layer === '0-20cm' ? 1.0 : (layer === '20-40cm' ? 0.75 : 0.5);
+        const factor = normalizedLayer === '0-20cm' ? 1.0 : (normalizedLayer === '20-40cm' ? 0.75 : 0.5);
         return {
           depth: layer,
-          pH: parseFloat(Math.max(4.0, averages.pH - (layer === '20-40cm' ? 0.3 : 0.5)).toFixed(2)),
+          pH: parseFloat(Math.max(4.0, averages.pH - (normalizedLayer === '20-40cm' ? 0.3 : 0.5)).toFixed(2)),
           MO: parseFloat((averages.MO * factor).toFixed(1)),
           P: parseFloat((averages.P * factor * 0.8).toFixed(1)),
           empty: true
