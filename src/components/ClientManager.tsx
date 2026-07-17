@@ -8,7 +8,7 @@ interface ClientManagerProps {
   plots: Plot[];
   projects: Project[];
   activePlotId: string;
-  onSelectPlot: (plotId: string) => void;
+  onSelectPlot: (plotId: string, monthYear?: string) => void;
   plotPeriods: PlotPeriod[];
   activeMonthYear: string;
   onSelectMonthYear: (my: string) => void;

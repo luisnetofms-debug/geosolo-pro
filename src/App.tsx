@@ -1402,13 +1402,17 @@ export default function App() {
                 activePlotId={activePlotId}
                 plotPeriods={plotPeriods}
                 activeMonthYear={activeMonthYear}
-                onSelectPlot={(id) => {
+                onSelectPlot={(id, monthYear) => {
                   setActivePlotId(id);
-                  const pPeriod = plotPeriods.find(p => p.plotId === id);
-                  if (pPeriod) {
-                    setActiveMonthYear(pPeriod.monthYear);
+                  if (monthYear) {
+                    setActiveMonthYear(monthYear);
                   } else {
-                    setActiveMonthYear('05/2026');
+                    const pPeriod = plotPeriods.find(p => p.plotId === id);
+                    if (pPeriod) {
+                      setActiveMonthYear(pPeriod.monthYear);
+                    } else {
+                      setActiveMonthYear('05/2026');
+                    }
                   }
                 }}
                 onSelectMonthYear={setActiveMonthYear}
@@ -1540,13 +1544,17 @@ export default function App() {
                 samplingPoints={samplingPoints}
                 soilLayers={soilLayers}
                 activeSoilLayer={activeSoilLayer}
-                onSelectPlot={(plotId) => {
+                onSelectPlot={(plotId, monthYear) => {
                   setActivePlotId(plotId);
-                  const pPeriod = plotPeriods.find(p => p.plotId === plotId);
-                  if (pPeriod) {
-                    setActiveMonthYear(pPeriod.monthYear);
+                  if (monthYear) {
+                    setActiveMonthYear(monthYear);
                   } else {
-                    setActiveMonthYear('05/2026');
+                    const pPeriod = plotPeriods.find(p => p.plotId === plotId);
+                    if (pPeriod) {
+                      setActiveMonthYear(pPeriod.monthYear);
+                    } else {
+                      setActiveMonthYear('05/2026');
+                    }
                   }
                 }}
                 onSelectTab={setActiveTab}

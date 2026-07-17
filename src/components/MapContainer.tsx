@@ -1464,6 +1464,8 @@ export default function MapContainer({
                     <option value="MO">M.O. (Matéria Orgânica)</option>
                     <option value="K">Potássio (K)</option>
                     <option value="P">Fósforo (P)</option>
+                    <option value="s">Enxofre (S)</option>
+                    <option value="k_t">Relação K/CTC %</option>
                     <option value="v_percent">V% (Saturação por Bases)</option>
                   </select>
                 </div>

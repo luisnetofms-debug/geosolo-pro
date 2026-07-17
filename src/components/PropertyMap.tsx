@@ -14,7 +14,7 @@ interface PropertyMapProps {
   samplingPoints: SamplingPoint[];
   soilLayers: string[];
   activeSoilLayer: string;
-  onSelectPlot: (plotId: string) => void;
+  onSelectPlot: (plotId: string, monthYear?: string) => void;
   onSelectTab: (tab: 'clients' | 'field_station' | 'lab_results' | 'ai_panel' | 'fertility_maps' | 'property_map') => void;
   activePlotId?: string;
   onSelectMonthYear?: (monthYear: string) => void;
@@ -87,6 +87,52 @@ export default function PropertyMap({
     return map;
   }, [farmPlots, samplingPoints, plotPeriods]);
 
+  // Helper to get the resolved selected project for a given plot
+  const getPlotProject = React.useCallback((plotId: string) => {
+    if (plotSelectedProjects[plotId]) {
+      return plotSelectedProjects[plotId];
+    }
+    const available = plotAvailablePeriods[plotId] || [];
+    return available.includes('05/2026') ? '05/2026' : (available[0] || '05/2026');
+  }, [plotSelectedProjects, plotAvailablePeriods]);
+
+  // Helper to save current configuration to localStorage
+  const saveConfigToLocalStorage = React.useCallback((
+    updatedProjects?: Record<string, string>,
+    updatedVisibility?: Record<string, boolean>,
+    updatedLayer?: string,
+    updatedVariable?: keyof SoilLabResults,
+    updatedSelectedPlotId?: string
+  ) => {
+    if (!farm) return;
+    try {
+      const currentProj = updatedProjects !== undefined ? updatedProjects : plotSelectedProjects;
+      const currentVis = updatedVisibility !== undefined ? updatedVisibility : visiblePlotIds;
+      const currentLayer = updatedLayer !== undefined ? updatedLayer : activeLayer;
+      const currentVar = updatedVariable !== undefined ? updatedVariable : mapVariable;
+      const currentPlotId = updatedSelectedPlotId !== undefined ? updatedSelectedPlotId : selectedPlotId;
+
+      const config = {
+        plotSelectedProjects: currentProj,
+        visiblePlotIds: currentVis,
+        activeLayer: currentLayer,
+        mapVariable: currentVar,
+        selectedPlotId: currentPlotId,
+        savedAt: new Date().toISOString()
+      };
+      
+      localStorage.setItem(`geosolo_property_map_config_${farm.id}`, JSON.stringify(config));
+      
+      if (currentPlotId) {
+        localStorage.setItem('geosolo_last_saved_plot_id', currentPlotId);
+        const chosenProj = currentProj[currentPlotId] || (plotAvailablePeriods[currentPlotId]?.includes('05/2026') ? '05/2026' : (plotAvailablePeriods[currentPlotId]?.[0] || '05/2026'));
+        localStorage.setItem('geosolo_last_saved_month_year', chosenProj);
+      }
+    } catch (err) {
+      console.error('Failed to save display configuration:', err);
+    }
+  }, [farm, plotSelectedProjects, visiblePlotIds, activeLayer, mapVariable, selectedPlotId, plotAvailablePeriods]);
+
   // Load saved configurations on mount / farm change (only once per farm)
   useEffect(() => {
     if (dbStatus === 'connecting') return;
@@ -100,11 +146,25 @@ export default function PropertyMap({
       if (savedConfigStr) {
         const config = JSON.parse(savedConfigStr);
         if (config) {
-          if (config.plotSelectedProjects) {
-            setPlotSelectedProjects(config.plotSelectedProjects);
-          }
+          const loadedProjects = { ...config.plotSelectedProjects };
+          // Ensure every plot has an assigned project
+          farmPlots.forEach(plot => {
+            if (!loadedProjects[plot.id]) {
+              const available = plotAvailablePeriods[plot.id] || [];
+              loadedProjects[plot.id] = available.includes('05/2026') ? '05/2026' : (available[0] || '05/2026');
+            }
+          });
+
+          setPlotSelectedProjects(loadedProjects);
+          
           if (config.visiblePlotIds) {
             setVisiblePlotIds(config.visiblePlotIds);
+          } else {
+            const initialVis: Record<string, boolean> = {};
+            farmPlots.forEach(plot => {
+              initialVis[plot.id] = true;
+            });
+            setVisiblePlotIds(initialVis);
           }
           if (config.activeLayer) {
             setActiveLayer(config.activeLayer);
@@ -128,19 +188,26 @@ export default function PropertyMap({
           }
           
           setSelectedPlotId(targetPlotId);
-          onSelectPlot(targetPlotId);
           
-          const savedProj = config.plotSelectedProjects?.[targetPlotId];
-          if (savedProj) {
-            onSelectMonthYear?.(savedProj);
-          } else {
-            const available = plotAvailablePeriods[targetPlotId] || [];
-            const defaultProj = available.includes('05/2026') ? '05/2026' : (available[0] || '05/2026');
-            onSelectMonthYear?.(defaultProj);
+          const chosenProj = loadedProjects[targetPlotId];
+          onSelectPlot(targetPlotId, chosenProj);
+          if (onSelectMonthYear) {
+            onSelectMonthYear(chosenProj);
           }
         }
       } else {
-        // No saved config
+        // No saved config - clear and reset states with defaults
+        const defaultProjects: Record<string, string> = {};
+        const initialVis: Record<string, boolean> = {};
+        
+        farmPlots.forEach(plot => {
+          const available = plotAvailablePeriods[plot.id] || [];
+          defaultProjects[plot.id] = available.includes('05/2026') ? '05/2026' : (available[0] || '05/2026');
+          initialVis[plot.id] = true;
+        });
+
+        setPlotSelectedProjects(defaultProjects);
+        setVisiblePlotIds(initialVis);
         setLastSavedDate(null);
         
         let targetPlotId = '';
@@ -151,11 +218,12 @@ export default function PropertyMap({
         }
         
         setSelectedPlotId(targetPlotId);
-        onSelectPlot(targetPlotId);
         
-        const available = plotAvailablePeriods[targetPlotId] || [];
-        const defaultProj = available.includes('05/2026') ? '05/2026' : (available[0] || '05/2026');
-        onSelectMonthYear?.(defaultProj);
+        const chosenProj = defaultProjects[targetPlotId];
+        onSelectPlot(targetPlotId, chosenProj);
+        if (onSelectMonthYear) {
+          onSelectMonthYear(chosenProj);
+        }
       }
       
       // Successfully loaded config for this farm
@@ -166,43 +234,10 @@ export default function PropertyMap({
     }
   }, [farm, farmPlots, globalActivePlotId, onSelectPlot, onSelectMonthYear, plotAvailablePeriods, dbStatus]);
 
-  // Initialize visibility state for plots
-  useEffect(() => {
-    if (farmPlots.length > 0) {
-      setVisiblePlotIds(prev => {
-        const next = { ...prev };
-        let updated = false;
-        farmPlots.forEach(plot => {
-          if (next[plot.id] === undefined) {
-            next[plot.id] = true;
-            updated = true;
-          }
-        });
-        return updated ? next : prev;
-      });
-    }
-  }, [farmPlots]);
-
   const handleSaveDisplayConfig = () => {
     if (!farm) return;
     try {
-      const config = {
-        plotSelectedProjects,
-        visiblePlotIds,
-        activeLayer,
-        mapVariable,
-        selectedPlotId,
-        savedAt: new Date().toISOString()
-      };
-      localStorage.setItem(`geosolo_property_map_config_${farm.id}`, JSON.stringify(config));
-      
-      // Save globally for App.tsx startup:
-      if (selectedPlotId) {
-        localStorage.setItem('geosolo_last_saved_plot_id', selectedPlotId);
-        const chosenProj = plotSelectedProjects[selectedPlotId] || '05/2026';
-        localStorage.setItem('geosolo_last_saved_month_year', chosenProj);
-      }
-      
+      saveConfigToLocalStorage();
       setLastSavedDate(new Date().toLocaleString('pt-BR'));
       setSaveStatus('Sucesso');
       setTimeout(() => setSaveStatus(null), 3000);
@@ -226,9 +261,10 @@ export default function PropertyMap({
           if (config.mapVariable) setMapVariable(config.mapVariable);
           if (config.selectedPlotId && farmPlots.some(p => p.id === config.selectedPlotId)) {
             setSelectedPlotId(config.selectedPlotId);
-            onSelectPlot(config.selectedPlotId);
-            if (config.plotSelectedProjects && config.plotSelectedProjects[config.selectedPlotId] && onSelectMonthYear) {
-              onSelectMonthYear(config.plotSelectedProjects[config.selectedPlotId]);
+            const chosenProj = config.plotSelectedProjects?.[config.selectedPlotId] || '05/2026';
+            onSelectPlot(config.selectedPlotId, chosenProj);
+            if (onSelectMonthYear) {
+              onSelectMonthYear(chosenProj);
             }
           }
           setSaveStatus('Restaurado');
@@ -257,25 +293,6 @@ export default function PropertyMap({
     }
   };
 
-  // Initialize selected project defaults for each plot
-  useEffect(() => {
-    const initialProjects: Record<string, string> = { ...plotSelectedProjects };
-    let updated = false;
-    
-    farmPlots.forEach(plot => {
-      if (!initialProjects[plot.id]) {
-        const available = plotAvailablePeriods[plot.id] || [];
-        // Default to latest period, or '05/2026'
-        initialProjects[plot.id] = available.includes('05/2026') ? '05/2026' : (available[0] || '05/2026');
-        updated = true;
-      }
-    });
-    
-    if (updated) {
-      setPlotSelectedProjects(initialProjects);
-    }
-  }, [farmPlots, plotAvailablePeriods]);
-
   const activePlot = useMemo(() => {
     return farmPlots.find(p => p.id === selectedPlotId) || null;
   }, [farmPlots, selectedPlotId]);
@@ -285,7 +302,7 @@ export default function PropertyMap({
     const averagesMap: Record<string, { averages: Record<string, number | string>; count: number }> = {};
     
     farmPlots.forEach(plot => {
-      const selectedProj = plotSelectedProjects[plot.id] || '05/2026';
+      const selectedProj = getPlotProject(plot.id);
       
       // Fetch sampling points for this plot and selected project monthYear
       const ptsForPlot = samplingPoints.filter(p => 
@@ -347,15 +364,21 @@ export default function PropertyMap({
     });
 
     return averagesMap;
-  }, [farmPlots, plotSelectedProjects, samplingPoints, activeLayer]);
+  }, [farmPlots, plotSelectedProjects, samplingPoints, activeLayer, getPlotProject]);
 
   // Fingerprint representing the set of active/visible plot IDs
   const visiblePlotsKey = useMemo(() => {
     return farmPlots
-      .filter(p => visiblePlotIds[p.id] !== false)
+      .filter(p => {
+        const plotProj = getPlotProject(p.id);
+        const isPlotVisible = visiblePlotIds[`${p.id}_${plotProj}`] !== undefined 
+          ? visiblePlotIds[`${p.id}_${plotProj}`] 
+          : (visiblePlotIds[p.id] !== false);
+        return isPlotVisible;
+      })
       .map(p => p.id)
       .join(',');
-  }, [farmPlots, visiblePlotIds]);
+  }, [farmPlots, visiblePlotIds, plotSelectedProjects, getPlotProject]);
 
   // 1. Leaflet Map Instance Initialization & Lifetime (dependent only on farm changes)
   useEffect(() => {
@@ -423,7 +446,13 @@ export default function PropertyMap({
     const map = mapInstanceRef.current;
     if (!map) return;
 
-    const visiblePlots = farmPlots.filter(p => visiblePlotIds[p.id] !== false && p.boundaryPoints && p.boundaryPoints.length >= 3);
+    const visiblePlots = farmPlots.filter(p => {
+      const plotProj = getPlotProject(p.id);
+      const isPlotVisible = visiblePlotIds[`${p.id}_${plotProj}`] !== undefined 
+        ? visiblePlotIds[`${p.id}_${plotProj}`] 
+        : (visiblePlotIds[p.id] !== false);
+      return isPlotVisible && p.boundaryPoints && p.boundaryPoints.length >= 3;
+    });
     if (visiblePlots.length === 0) return;
 
     const boundsPoints = visiblePlots.flatMap(p => (p.boundaryPoints || []).map(bp => L.latLng(bp.lat, bp.lng)));
@@ -444,8 +473,11 @@ export default function PropertyMap({
 
     // Draw each plot with colored polygons corresponding to mapVariable level
     farmPlots.forEach(plot => {
-      // Respect visible toggle
-      const isPlotVisible = visiblePlotIds[plot.id] !== false;
+      const plotProj = getPlotProject(plot.id);
+      // Respect visible toggle per project
+      const isPlotVisible = visiblePlotIds[`${plot.id}_${plotProj}`] !== undefined 
+        ? visiblePlotIds[`${plot.id}_${plotProj}`] 
+        : (visiblePlotIds[plot.id] !== false);
       if (!isPlotVisible) return;
 
       if (!plot.boundaryPoints || !Array.isArray(plot.boundaryPoints) || plot.boundaryPoints.length < 3) return;
@@ -493,18 +525,18 @@ export default function PropertyMap({
 
       poly.on('click', () => {
         setSelectedPlotId(plot.id);
-        // Cohesively align the global App.tsx selected plot and project too!
-        onSelectPlot(plot.id);
-        const plotProj = plotSelectedProjects[plot.id] || '05/2026';
+        const plotProj = getPlotProject(plot.id);
+        onSelectPlot(plot.id, plotProj);
         if (onSelectMonthYear) {
           onSelectMonthYear(plotProj);
         }
+        saveConfigToLocalStorage(undefined, undefined, undefined, undefined, plot.id);
       });
 
       const variableLabel = thresholds?.name || String(mapVariable).toUpperCase();
       const unit = thresholds?.unit || '';
       const displayVal = isNaN(numVal) ? 'Sem análise' : `${numVal.toFixed(2)} ${unit}`;
-      const chosenProj = plotSelectedProjects[plot.id] || '05/2026';
+      const chosenProj = getPlotProject(plot.id);
 
       // Attach detailed tooltip
       poly.bindTooltip(`
@@ -519,7 +551,7 @@ export default function PropertyMap({
         </div>
       `, { sticky: true });
     });
-  }, [farmPlots, selectedPlotId, plotProjectAverages, mapVariable, plotSelectedProjects, visiblePlotIds]);
+  }, [farmPlots, selectedPlotId, plotProjectAverages, mapVariable, plotSelectedProjects, visiblePlotIds, getPlotProject, saveConfigToLocalStorage]);
 
   if (!farm) {
     return (
@@ -668,6 +700,8 @@ export default function PropertyMap({
                 <option value="k">Potássio (K+)</option>
                 <option value="ca">Cálcio (Ca 2+)</option>
                 <option value="mg">Magnésio (Mg 2+)</option>
+                <option value="s">Enxofre (S)</option>
+                <option value="k_t">Relação K/CTC %</option>
                 <option value="al">Alumínio (Al 3+)</option>
                 <option value="argila">Argila (%)</option>
               </select>
@@ -765,8 +799,10 @@ export default function PropertyMap({
           <div className="space-y-2.5 max-h-[380px] overflow-y-auto pr-1">
             {farmPlots.map(plot => {
               const isSelected = plot.id === selectedPlotId;
-              const isPlotVisible = visiblePlotIds[plot.id] !== false;
-              const plotProj = plotSelectedProjects[plot.id] || '05/2026';
+              const plotProj = getPlotProject(plot.id);
+              const isPlotVisible = visiblePlotIds[`${plot.id}_${plotProj}`] !== undefined 
+                ? visiblePlotIds[`${plot.id}_${plotProj}`] 
+                : (visiblePlotIds[plot.id] !== false);
               const avg = plotProjectAverages[plot.id];
               const samplingCount = avg?.count || 0;
 
@@ -775,10 +811,12 @@ export default function PropertyMap({
                   key={plot.id}
                   onClick={() => {
                     setSelectedPlotId(plot.id);
-                    onSelectPlot(plot.id);
+                    const plotProjVal = getPlotProject(plot.id);
+                    onSelectPlot(plot.id, plotProjVal);
                     if (onSelectMonthYear) {
-                      onSelectMonthYear(plotProj);
+                      onSelectMonthYear(plotProjVal);
                     }
+                    saveConfigToLocalStorage(undefined, undefined, undefined, undefined, plot.id);
                   }}
                   className={`p-3 rounded-lg border transition-all text-left cursor-pointer space-y-2.5 relative flex flex-col justify-between ${
                     isSelected 
@@ -803,17 +841,23 @@ export default function PropertyMap({
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation();
-                          setVisiblePlotIds(prev => ({
-                            ...prev,
-                            [plot.id]: prev[plot.id] === undefined ? false : !prev[plot.id]
-                          }));
+                          const projectKey = `${plot.id}_${plotProj}`;
+                          const currentVal = visiblePlotIds[projectKey] !== undefined 
+                            ? visiblePlotIds[projectKey] 
+                            : (visiblePlotIds[plot.id] !== false);
+                          const nextVis = {
+                            ...visiblePlotIds,
+                            [projectKey]: !currentVal
+                          };
+                          setVisiblePlotIds(nextVis);
+                          saveConfigToLocalStorage(undefined, nextVis);
                         }}
                         className={`px-2 py-1 rounded-md border transition-all cursor-pointer flex items-center gap-1 text-[8px] font-black uppercase ${
                           isPlotVisible
                             ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
                             : 'bg-slate-100 text-slate-450 border-slate-200 hover:bg-slate-150'
                         }`}
-                        title={isPlotVisible ? "Ocultar talhão no mapa" : "Mostrar talhão no mapa"}
+                        title={isPlotVisible ? "Ocultar projeto no mapa" : "Mostrar projeto no mapa"}
                       >
                         {isPlotVisible ? (
                           <>
@@ -846,10 +890,13 @@ export default function PropertyMap({
                         onChange={(e) => {
                           e.stopPropagation();
                           const val = e.target.value;
-                          setPlotSelectedProjects(prev => ({ ...prev, [plot.id]: val }));
+                          const nextProjects = { ...plotSelectedProjects, [plot.id]: val };
+                          setPlotSelectedProjects(nextProjects);
                           if (plot.id === selectedPlotId && onSelectMonthYear) {
                             onSelectMonthYear(val);
+                            onSelectPlot(plot.id, val);
                           }
+                          saveConfigToLocalStorage(nextProjects);
                         }}
                         className="text-[10px] bg-white border border-slate-225 rounded px-1.5 py-0.5 font-bold text-slate-700 cursor-pointer focus:ring-1 focus:ring-blue-500"
                       >
@@ -966,15 +1013,20 @@ export default function PropertyMap({
                     Análise Físico-Química Média: {activePlot.name}
                   </h4>
                   <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-mono font-bold uppercase shrink-0 ${
-                    visiblePlotIds[activePlot.id] !== false
+                    (visiblePlotIds[`${activePlot.id}_${getPlotProject(activePlot.id)}`] !== undefined 
+                      ? visiblePlotIds[`${activePlot.id}_${getPlotProject(activePlot.id)}`] 
+                      : (visiblePlotIds[activePlot.id] !== false))
                       ? 'bg-emerald-100 text-emerald-800'
                       : 'bg-slate-100 text-slate-500'
                   }`}>
-                    {visiblePlotIds[activePlot.id] !== false ? '● Visível no Mapa' : '○ Oculto no Mapa'}
+                    {(visiblePlotIds[`${activePlot.id}_${getPlotProject(activePlot.id)}`] !== undefined 
+                      ? visiblePlotIds[`${activePlot.id}_${getPlotProject(activePlot.id)}`] 
+                      : (visiblePlotIds[activePlot.id] !== false))
+                      ? '● Visível no Mapa' : '○ Oculto no Mapa'}
                   </span>
                 </div>
                 <p className="text-[10px] text-slate-400 mt-0.5">
-                  Consolidação métrica de todas as coletas ({plotSelectedProjects[activePlot.id] || '05/2026'}) • Profundidade: <strong className="text-slate-600 font-bold">{activeLayer}</strong>
+                  Consolidação métrica de todas as coletas ({getPlotProject(activePlot.id)}) • Profundidade: <strong className="text-slate-600 font-bold">{activeLayer}</strong>
                 </p>
               </div>
 
@@ -1003,7 +1055,7 @@ export default function PropertyMap({
                 <Database className="w-8 h-8 text-slate-400 mx-auto" />
                 <h5 className="text-xs font-bold text-slate-700 uppercase leading-none">Sem dados de laboratório nesta data</h5>
                 <p className="text-[10px] text-slate-500 max-w-sm mx-auto">
-                  Ainda não constam furos com análise de solo cadastradas para o projeto <strong className="text-slate-700 font-semibold">{plotSelectedProjects[activePlot.id] || '05/2026'}</strong> do talhão selecionado. Para alimentar os teores, utilize as tabelas de dados.
+                  Ainda não constam furos com análise de solo cadastradas para o projeto <strong className="text-slate-700 font-semibold">{getPlotProject(activePlot.id)}</strong> do talhão selecionado. Para alimentar os teores, utilize as tabelas de dados.
                 </p>
               </div>
             ) : (
@@ -1052,13 +1104,14 @@ export default function PropertyMap({
                     </span>
                   </div>
 
-                  <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+                  <div className="grid grid-cols-2 md:grid-cols-7 gap-3">
                     {renderVariableStat('ph_cacl2', 'quimica_base')}
                     {renderVariableStat('ph_h2o', 'quimica_base')}
                     {renderVariableStat('v_percent', 'quimica_base')}
                     {renderVariableStat('ctc_t', 'quimica_base')}
                     {renderVariableStat('sb', 'quimica_base')}
                     {renderVariableStat('al', 'quimica_base')}
+                    {renderVariableStat('k_t', 'quimica_base')}
                   </div>
                 </div>
 
@@ -1071,13 +1124,14 @@ export default function PropertyMap({
                     </span>
                   </div>
 
-                  <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+                  <div className="grid grid-cols-2 md:grid-cols-7 gap-3">
                     {renderVariableStat('mo', 'quimica_macronutrientes')}
                     {renderVariableStat('p_res', 'quimica_macronutrientes')}
                     {renderVariableStat('p_meh', 'quimica_macronutrientes')}
                     {renderVariableStat('k', 'quimica_macronutrientes')}
                     {renderVariableStat('ca', 'quimica_macronutrientes')}
                     {renderVariableStat('mg', 'quimica_macronutrientes')}
+                    {renderVariableStat('s', 'quimica_macronutrientes')}
                   </div>
                 </div>
 
@@ -1110,7 +1164,7 @@ export default function PropertyMap({
                     </p>
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-[11px]">
+                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 text-[11px]">
                     <div className="bg-white p-3 rounded-lg border border-slate-100 flex justify-between items-center shadow-2xs">
                       <div>
                         <strong className="text-slate-400 font-mono text-[9px] block">Relação Ca/Mg</strong>
@@ -1144,6 +1198,18 @@ export default function PropertyMap({
                       </div>
                       <span className="bg-slate-100 text-[9px] text-slate-500 px-2 py-0.5 rounded font-bold uppercase whitespace-nowrap">
                         Alvo: 10% - 20%
+                      </span>
+                    </div>
+
+                    <div className="bg-white p-3 rounded-lg border border-slate-100 flex justify-between items-center shadow-2xs">
+                      <div>
+                        <strong className="text-slate-400 font-mono text-[9px] block">Relação K/CTC % (K/T)</strong>
+                        <strong className="text-slate-800 text-xs font-mono font-extrabold block mt-0.5">
+                          {selectedPlotAverages?.k_t ? `${Number(selectedPlotAverages.k_t).toFixed(1)}%` : 'N/D'}
+                        </strong>
+                      </div>
+                      <span className="bg-slate-100 text-[9px] text-slate-500 px-2 py-0.5 rounded font-bold uppercase whitespace-nowrap">
+                        Alvo: 2% - 6%
                       </span>
                     </div>
                   </div>
