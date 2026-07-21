@@ -69,6 +69,13 @@ export interface SoilLabResults {
   areia_fina?: number | string;   // Areia Fina (%, aceita "ns")
   clas_textura?: string;  // Classe Textural (ex: "MUITO ARGILOSO")
   tipo_solo?: string;     // Tipo de solo (ex: "AD 4")
+
+  // Agronomic Recommendation Doses
+  rec_calcario?: number | string;  // Rec. Calcário (t/ha)
+  rec_gesso?: number | string;     // Rec. Gesso (t/ha)
+  rec_kcl?: number | string;       // Rec. KCl (kg/ha)
+  rec_map?: number | string;       // Rec. MAP (kg/ha)
+  rec_formulado?: number | string; // Rec. Formulado NPK (kg/ha)
 }
 
 export interface Subsample {
@@ -188,6 +195,13 @@ export const FERTILITY_THRESHOLDS: Record<keyof SoilLabResults, { low: number; m
   areia_fina: { low: 10, medium: 25, high: 50, unit: '%', name: 'Areia Fina' },
   clas_textura: { low: 0, medium: 0, high: 0, unit: '', name: 'CLAS. TEXTURA' },
   tipo_solo: { low: 0, medium: 0, high: 0, unit: '', name: 'TIPO SOLO' },
+
+  // Recommendation Doses
+  rec_calcario: { low: 1.0, medium: 2.0, high: 3.5, unit: 't/ha', name: 'Rec. Calcário' },
+  rec_gesso: { low: 0.5, medium: 1.0, high: 2.0, unit: 't/ha', name: 'Rec. Gesso' },
+  rec_kcl: { low: 40, medium: 80, high: 120, unit: 'kg/ha', name: 'Rec. KCl' },
+  rec_map: { low: 50, medium: 100, high: 180, unit: 'kg/ha', name: 'Rec. MAP' },
+  rec_formulado: { low: 100, medium: 200, high: 350, unit: 'kg/ha', name: 'Rec. Formulado' },
 };
 
 export interface UserProfile {

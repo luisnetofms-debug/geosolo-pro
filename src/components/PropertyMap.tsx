@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Farm, Plot, SamplingPoint, PlotPeriod, SoilLabResults, FERTILITY_THRESHOLDS } from '../types';
+import { calculateAutoRecs } from './AIPanel';
 import L from 'leaflet';
 import { 
   Building2, Layers, CheckSquare, Settings, Compass, 
@@ -388,7 +389,28 @@ export default function PropertyMap({
         }
 
         if (resultsToUse) {
-          resultsList.push(resultsToUse);
+          const savedRec = p.recommendations || {};
+          const autoRecs = calculateAutoRecs(p, plot.cropType || 'soja', 70, 80);
+
+          const calcarioVal = (savedRec.calcarioDolomitico !== undefined || savedRec.calcarioCalcitico !== undefined)
+            ? ((savedRec.calcarioDolomitico || 0) + (savedRec.calcarioCalcitico || 0))
+            : autoRecs.nc;
+
+          const gessoVal = savedRec.gesso !== undefined ? savedRec.gesso : autoRecs.ng;
+          const kclVal = savedRec.kcl !== undefined ? savedRec.kcl : autoRecs.kcl;
+          const mapVal = savedRec.map !== undefined ? savedRec.map : autoRecs.map;
+          const formuladoVal = savedRec.formulado12_15_15 !== undefined ? savedRec.formulado12_15_15 : autoRecs.formulado;
+
+          const enrichedResults: SoilLabResults = {
+            ...resultsToUse,
+            rec_calcario: calcarioVal,
+            rec_gesso: gessoVal,
+            rec_kcl: kclVal,
+            rec_map: mapVal,
+            rec_formulado: formuladoVal,
+          };
+
+          resultsList.push(enrichedResults);
           if (p.isCollected) collectedCount++;
         }
       });
@@ -551,7 +573,13 @@ export default function PropertyMap({
       const thresholds = FERTILITY_THRESHOLDS[mapVariable];
 
       if (!isNaN(numVal) && thresholds) {
-        if (mapVariable === 'Al' || mapVariable === 'al') {
+        if (String(mapVariable).startsWith('rec_')) {
+          // Recommendation doses (0 = ideal/none needed, low = blue, medium = amber, high = dark amber)
+          if (numVal === 0) fillColor = '#10b981'; // green / no application needed
+          else if (numVal <= thresholds.low) fillColor = '#3b82f6'; // blue / light dose
+          else if (numVal <= thresholds.medium) fillColor = '#f59e0b'; // amber / moderate dose
+          else fillColor = '#d97706'; // dark amber / high dose
+        } else if (mapVariable === 'Al' || mapVariable === 'al') {
           // Aluminum is toxic - low is better
           if (numVal <= thresholds.low) fillColor = '#10b981'; // green / excellent
           else if (numVal <= thresholds.medium) fillColor = '#eab308'; // yellow / alert
@@ -1155,38 +1183,95 @@ export default function PropertyMap({
                   );
                 })}
 
-                {/* Dropdown for remaining parameters */}
+                <div className="h-4 w-px bg-slate-300 dark:bg-slate-700 mx-0.5 shrink-0" />
+
+                {/* Recommendation Dose Pills */}
+                <span className="text-[9px] font-black uppercase text-amber-600 dark:text-amber-400 shrink-0 hidden sm:inline">
+                  Doses:
+                </span>
+
+                {[
+                  { id: 'rec_calcario', label: 'Calcário', unit: 't/ha' },
+                  { id: 'rec_gesso', label: 'Gesso', unit: 't/ha' },
+                  { id: 'rec_kcl', label: 'KCl', unit: 'kg/ha' },
+                  { id: 'rec_map', label: 'MAP', unit: 'kg/ha' },
+                  { id: 'rec_formulado', label: 'Formulado', unit: 'kg/ha' },
+                ].map(item => {
+                  const isSelected = mapVariable === item.id;
+                  const avgData = plotProjectAverages[selectedPlotId]?.averages;
+                  const val = avgData ? avgData[item.id] : NaN;
+                  const numVal = typeof val === 'number' ? val : (val && !isNaN(parseFloat(String(val))) ? parseFloat(String(val)) : NaN);
+                  const formattedVal = !isNaN(numVal) 
+                    ? (item.unit === 't/ha' ? `${numVal.toFixed(1)}t` : `${Math.round(numVal)}kg`)
+                    : null;
+
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => setMapVariable(item.id as keyof SoilLabResults)}
+                      className={`px-2 py-0.5 text-[10px] font-extrabold rounded-md whitespace-nowrap transition-all cursor-pointer flex items-center gap-1 shrink-0 ${
+                        isSelected
+                          ? 'bg-amber-600 text-white shadow-xs font-black ring-1 ring-amber-400'
+                          : isFullscreen
+                            ? 'bg-amber-950/70 hover:bg-amber-900 text-amber-300 border border-amber-800/60'
+                            : 'bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200/90'
+                      }`}
+                      title={`Visualizar dose de ${item.label}`}
+                    >
+                      <span>{item.label}</span>
+                      {formattedVal && (
+                        <span className={`text-[8px] px-1 py-0.1 rounded font-mono font-black ${
+                          isSelected ? 'bg-amber-800 text-amber-100' : 'bg-amber-200/80 text-amber-950'
+                        }`}>
+                          {formattedVal}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+
+                {/* Dropdown with groups */}
                 <select
                   value={mapVariable}
                   onChange={(e) => setMapVariable(e.target.value as keyof SoilLabResults)}
-                  className={`text-[10px] font-extrabold border rounded-md px-1.5 py-0.5 cursor-pointer focus:outline-hidden ${
+                  className={`text-[10px] font-extrabold border rounded-md px-1.5 py-0.5 cursor-pointer focus:outline-hidden shrink-0 ${
                     isFullscreen
                       ? 'bg-slate-800 text-emerald-400 border-slate-700'
                       : 'bg-slate-100 text-slate-700 border-slate-200'
                   }`}
                 >
-                  <option value="v_percent">V% (Saturação Bases)</option>
-                  <option value="s">Enxofre (S)</option>
-                  <option value="p_meh">Fósforo (P Mehlich)</option>
-                  <option value="p_res">Fósforo (P Resina)</option>
-                  <option value="k_t">Relação K/CTC % (K/T)</option>
-                  <option value="pH">pH (H₂O)</option>
-                  <option value="ph_cacl2">pH (CaCl₂)</option>
-                  <option value="mo">M.O. (Matéria Orgânica)</option>
-                  <option value="k">Potássio (K⁺)</option>
-                  <option value="ca">Cálcio (Ca²⁺)</option>
-                  <option value="mg">Magnésio (Mg²⁺)</option>
-                  <option value="al">Alumínio (Al³⁺)</option>
-                  <option value="ctc_t">CTC (T)</option>
-                  <option value="sb">Soma de Bases (SB)</option>
-                  <option value="argila">Teor de Argila (%)</option>
-                  <option value="silte">Silte (%)</option>
-                  <option value="areia_total">Areia Total (%)</option>
-                  <option value="b">Boro (B)</option>
-                  <option value="cu">Cobre (Cu)</option>
-                  <option value="fe">Ferro (Fe)</option>
-                  <option value="mn">Manganês (Mn)</option>
-                  <option value="zn">Zinco (Zn)</option>
+                  <optgroup label="🌱 Variáveis do Solo">
+                    <option value="v_percent">V% (Saturação Bases)</option>
+                    <option value="s">Enxofre (S)</option>
+                    <option value="p_meh">Fósforo (P Mehlich)</option>
+                    <option value="p_res">Fósforo (P Resina)</option>
+                    <option value="k_t">Relação K/CTC % (K/T)</option>
+                    <option value="pH">pH (H₂O)</option>
+                    <option value="ph_cacl2">pH (CaCl₂)</option>
+                    <option value="mo">M.O. (Matéria Orgânica)</option>
+                    <option value="k">Potássio (K⁺)</option>
+                    <option value="ca">Cálcio (Ca²⁺)</option>
+                    <option value="mg">Magnésio (Mg²⁺)</option>
+                    <option value="al">Alumínio (Al³⁺)</option>
+                    <option value="ctc_t">CTC (T)</option>
+                    <option value="sb">Soma de Bases (SB)</option>
+                    <option value="argila">Teor de Argila (%)</option>
+                    <option value="silte">Silte (%)</option>
+                    <option value="areia_total">Areia Total (%)</option>
+                    <option value="b">Boro (B)</option>
+                    <option value="cu">Cobre (Cu)</option>
+                    <option value="fe">Ferro (Fe)</option>
+                    <option value="mn">Manganês (Mn)</option>
+                    <option value="zn">Zinco (Zn)</option>
+                  </optgroup>
+                  <optgroup label="🌾 Doses de Recomendação">
+                    <option value="rec_calcario">Rec. Calcário (t/ha)</option>
+                    <option value="rec_gesso">Rec. Gesso Agrícola (t/ha)</option>
+                    <option value="rec_kcl">Rec. KCl - Cloreto de Potássio (kg/ha)</option>
+                    <option value="rec_map">Rec. MAP - Fosfato (kg/ha)</option>
+                    <option value="rec_formulado">Rec. Formulado 12-15-15 (kg/ha)</option>
+                  </optgroup>
                 </select>
               </div>
             </div>
@@ -1214,26 +1299,49 @@ export default function PropertyMap({
             </div>
 
             {/* Color mapping legend overlay */}
-            <div className="absolute bottom-3 left-3 bg-white/95 rounded-lg border border-slate-200 p-2.5 z-1000 shadow-sm max-w-[170px] space-y-1.5 text-[10px]">
+            <div className="absolute bottom-3 left-3 bg-white/95 rounded-lg border border-slate-200 p-2.5 z-1000 shadow-sm max-w-[190px] space-y-1.5 text-[10px]">
               <span className="font-extrabold text-slate-800 block text-[9px] uppercase tracking-wide">
-                Teores ({FERTILITY_THRESHOLDS[mapVariable]?.unit || 'Adimensional'})
+                {String(mapVariable).startsWith('rec_') ? 'Dose Recomendada' : 'Teores'} ({FERTILITY_THRESHOLDS[mapVariable]?.unit || 'Adimensional'})
               </span>
               <div className="space-y-1">
-                <div className="flex items-center gap-1.5">
-                  <span className="w-3 h-3 rounded bg-[#ef4444] border border-white block" />
-                  <span>Baixo Teor / Crítico</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <span className="w-3 h-3 rounded bg-[#f59e0b] border border-white block" />
-                  <span>Teor Médio / Alvo</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <span className="w-3 h-3 rounded bg-[#10b981] border border-white block" />
-                  <span>Excelente / Pleno</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <span className="w-3 h-3 rounded bg-[#64748b] border border-white block" />
-                  <span>Sem amostragem cadastrada</span>
+                {String(mapVariable).startsWith('rec_') ? (
+                  <>
+                    <div className="flex items-center gap-1.5">
+                      <span className="w-3 h-3 rounded bg-[#10b981] border border-white block shrink-0" />
+                      <span>Sem necessidade (0)</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="w-3 h-3 rounded bg-[#3b82f6] border border-white block shrink-0" />
+                      <span>Dose Leve</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="w-3 h-3 rounded bg-[#f59e0b] border border-white block shrink-0" />
+                      <span>Dose Moderada</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="w-3 h-3 rounded bg-[#d97706] border border-white block shrink-0" />
+                      <span>Dose Elevada</span>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex items-center gap-1.5">
+                      <span className="w-3 h-3 rounded bg-[#ef4444] border border-white block shrink-0" />
+                      <span>Baixo Teor / Crítico</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="w-3 h-3 rounded bg-[#f59e0b] border border-white block shrink-0" />
+                      <span>Teor Médio / Alvo</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="w-3 h-3 rounded bg-[#10b981] border border-white block shrink-0" />
+                      <span>Excelente / Pleno</span>
+                    </div>
+                  </>
+                )}
+                <div className="flex items-center gap-1.5 pt-0.5 border-t border-slate-100">
+                  <span className="w-3 h-3 rounded bg-[#64748b] border border-white block shrink-0" />
+                  <span>Sem amostragem</span>
                 </div>
               </div>
             </div>
@@ -1452,6 +1560,74 @@ export default function PropertyMap({
                         Alvo: 2% - 6%
                       </span>
                     </div>
+                  </div>
+                </div>
+
+                {/* 6. AGRONOMIC RECOMMENDATION DOSES SUMMARY */}
+                <div className="p-4 bg-amber-50/60 border border-amber-200/90 rounded-xl space-y-3.5">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-left">
+                    <div>
+                      <span className="text-[10px] font-black text-amber-950 uppercase block tracking-wider leading-none flex items-center gap-1.5">
+                        <Sparkles className="w-3.5 h-3.5 text-amber-600" />
+                        Recomendação de Fertilizantes e Corretivos (Diagnóstico Agronômico)
+                      </span>
+                      <p className="text-[9px] text-amber-800/80 leading-none mt-1">
+                        Doses médias por hectare consolidadas para o talhão ({activePlot.cropType || 'Soja'})
+                      </p>
+                    </div>
+                    <span className="text-[9px] bg-amber-200/80 text-amber-950 px-2 py-0.5 rounded font-extrabold uppercase whitespace-nowrap self-start sm:self-auto">
+                      Camada {activeLayer}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-[11px]">
+                    {[
+                      { key: 'rec_calcario', label: 'Calcário Total', unit: 't/ha', target: 'Calagem (NC)', icon: '🪨' },
+                      { key: 'rec_gesso', label: 'Gesso Agrícola', unit: 't/ha', target: 'Gessagem (NG)', icon: '🌾' },
+                      { key: 'rec_kcl', label: 'Cloreto de Potássio', unit: 'kg/ha', target: 'Fertilização K', icon: '⚡' },
+                      { key: 'rec_map', label: 'Fosfato (MAP)', unit: 'kg/ha', target: 'Fertilização P', icon: '🌱' },
+                      { key: 'rec_formulado', label: 'Formulado 12-15-15', unit: 'kg/ha', target: 'Adubação NPK', icon: '📦' },
+                    ].map(item => {
+                      const val = selectedPlotAverages ? selectedPlotAverages[item.key] : NaN;
+                      const numVal = typeof val === 'number' ? val : (val && !isNaN(parseFloat(String(val))) ? parseFloat(String(val)) : NaN);
+                      const formatted = !isNaN(numVal) 
+                        ? (item.unit === 't/ha' ? `${numVal.toFixed(1)} t/ha` : `${Math.round(numVal)} kg/ha`)
+                        : '0.0 ' + item.unit;
+
+                      const isCurrentMapVar = mapVariable === item.key;
+
+                      return (
+                        <div 
+                          key={item.key}
+                          onClick={() => setMapVariable(item.key as keyof SoilLabResults)}
+                          className={`p-3 rounded-xl border transition-all cursor-pointer shadow-2xs flex flex-col justify-between ${
+                            isCurrentMapVar
+                              ? 'bg-amber-100/90 border-amber-500 ring-2 ring-amber-400'
+                              : 'bg-white border-amber-200/80 hover:border-amber-300 hover:bg-amber-50/50'
+                          }`}
+                        >
+                          <div>
+                            <div className="flex items-center justify-between">
+                              <span className="text-sm">{item.icon}</span>
+                              <span className="text-[8px] bg-amber-100 text-amber-900 px-1.5 py-0.5 rounded font-extrabold uppercase">
+                                {item.target}
+                              </span>
+                            </div>
+                            <strong className="text-slate-700 text-[10px] font-bold block mt-1.5 leading-snug">
+                              {item.label}
+                            </strong>
+                          </div>
+                          <div className="mt-2.5 pt-1.5 border-t border-dashed border-amber-200/80 flex items-center justify-between">
+                            <strong className="text-amber-950 text-xs sm:text-sm font-mono font-black">
+                              {formatted}
+                            </strong>
+                            <span className="text-[8px] text-amber-700 font-bold underline">
+                              {isCurrentMapVar ? 'Ativo' : 'Ver no mapa'}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
 
