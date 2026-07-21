@@ -4,7 +4,8 @@ import L from 'leaflet';
 import { 
   Building2, Layers, CheckSquare, Settings, Compass, 
   ChevronRight, Calendar, AlertCircle, Info, Database,
-  TrendingUp, Activity, Sparkles, Filter, Droplet, Eye, EyeOff
+  TrendingUp, Activity, Sparkles, Filter, Droplet, Eye, EyeOff,
+  Maximize2, Minimize2
 } from 'lucide-react';
 
 interface PropertyMapProps {
@@ -50,6 +51,10 @@ export default function PropertyMap({
   // Track map visibility state (active vs hidden) per plot
   const [visiblePlotIds, setVisiblePlotIds] = useState<Record<string, boolean>>({});
 
+  // Fullscreen state and wrapper ref
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const fullscreenWrapperRef = useRef<HTMLDivElement | null>(null);
+
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const [lastSavedDate, setLastSavedDate] = useState<string | null>(null);
 
@@ -57,6 +62,61 @@ export default function PropertyMap({
   const mapInstanceRef = useRef<L.Map | null>(null);
   const layersGroupRef = useRef<L.FeatureGroup | null>(null);
   const loadedFarmIdRef = useRef<string | null>(null);
+
+  const toggleFullscreen = () => {
+    setIsFullscreen(prev => {
+      const next = !prev;
+      if (next) {
+        if (fullscreenWrapperRef.current && fullscreenWrapperRef.current.requestFullscreen) {
+          fullscreenWrapperRef.current.requestFullscreen().catch(() => {
+            // Native fullscreen blocked (e.g. inside iframe), fallback to fixed CSS modal
+          });
+        }
+      } else {
+        if (document.fullscreenElement) {
+          document.exitFullscreen().catch(() => {});
+        }
+      }
+      return next;
+    });
+  };
+
+  // Sync state when native fullscreen exits (e.g., via ESC key)
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      if (!document.fullscreenElement && isFullscreen) {
+        setIsFullscreen(false);
+      }
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, [isFullscreen]);
+
+  // Trigger Leaflet map invalidateSize when toggling fullscreen
+  useEffect(() => {
+    if (mapInstanceRef.current) {
+      const t1 = setTimeout(() => mapInstanceRef.current?.invalidateSize(), 50);
+      const t2 = setTimeout(() => mapInstanceRef.current?.invalidateSize(), 200);
+      return () => {
+        clearTimeout(t1);
+        clearTimeout(t2);
+      };
+    }
+  }, [isFullscreen]);
+
+  // ESC key listener for fixed overlay mode fallback
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isFullscreen) {
+        if (document.fullscreenElement) {
+          document.exitFullscreen().catch(() => {});
+        }
+        setIsFullscreen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isFullscreen]);
 
   // Filter plots belonging to this farm
   const farmPlots = useMemo(() => {
@@ -954,25 +1014,205 @@ export default function PropertyMap({
       <div className="lg:col-span-8 flex flex-col space-y-4">
         
         {/* Map Stage container */}
-        <div className="bg-white rounded-xl border border-slate-150 shadow-xs overflow-hidden flex flex-col">
-          <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+        <div 
+          ref={fullscreenWrapperRef}
+          className={`bg-white rounded-xl border border-slate-150 shadow-xs overflow-hidden flex flex-col transition-all ${
+            isFullscreen 
+              ? 'fixed inset-0 z-[9999] w-screen h-screen rounded-none border-none p-0 bg-slate-900' 
+              : ''
+          }`}
+        >
+          <div className={`p-4 border-b flex items-center justify-between ${
+            isFullscreen ? 'bg-slate-900 border-slate-800 text-white' : 'bg-white border-slate-100 text-slate-800'
+          }`}>
             <div>
-              <h4 className="text-xs font-extrabold text-slate-800 uppercase leading-none">
+              <h4 className={`text-xs font-extrabold uppercase leading-none ${isFullscreen ? 'text-white' : 'text-slate-800'}`}>
                 Mapeamento das Quadras • Limites do Imóvel
               </h4>
-              <p className="text-[10px] text-slate-400 mt-0.5 leading-none">
-                Roteiro geoespacial e fertilidade visual ativa para {activeLayer}
+              <p className={`text-[10px] mt-0.5 leading-none ${isFullscreen ? 'text-slate-400' : 'text-slate-400'}`}>
+                Roteiro geoespacial e fertilidade visual ativa para {activeLayer} {farm ? `• ${farm.name}` : ''}
               </p>
             </div>
             
-            <div className="text-[9px] bg-indigo-50 border border-indigo-100 rounded px-2 py-1 text-center font-mono font-bold text-indigo-700">
-              Visualização por Talhão & Proyecto Selecionado
+            <div className="flex items-center gap-2">
+              {isFullscreen && (
+                <div className="flex items-center gap-2 text-xs mr-2">
+                  <span className="text-[10px] text-slate-400 uppercase font-bold hidden md:inline">Variável:</span>
+                  <select
+                    value={mapVariable}
+                    onChange={(e) => setMapVariable(e.target.value as keyof SoilLabResults)}
+                    className="text-[10px] bg-slate-800 border border-slate-700 text-emerald-400 rounded px-2 py-1 font-bold cursor-pointer focus:outline-hidden"
+                  >
+                    <option value="v_percent">V% Saturação Bases</option>
+                    <option value="pH">pH (H2O)</option>
+                    <option value="ph_cacl2">pH CaCl2</option>
+                    <option value="mo">M.O. Matéria Orgânica</option>
+                    <option value="p_meh">Fósforo (P meh)</option>
+                    <option value="k">Potássio (K+)</option>
+                    <option value="ca">Cálcio (Ca 2+)</option>
+                    <option value="mg">Magnésio (Mg 2+)</option>
+                    <option value="s">Enxofre (S)</option>
+                    <option value="k_t">Relação K/CTC %</option>
+                    <option value="al">Alumínio (Al 3+)</option>
+                    <option value="argila">Argila (%)</option>
+                  </select>
+                </div>
+              )}
+
+              <div className="text-[9px] bg-indigo-50 border border-indigo-100 rounded px-2 py-1 text-center font-mono font-bold text-indigo-700 hidden sm:block">
+                Visualização por Talhão & Projeto Selecionado
+              </div>
+
+              <button
+                type="button"
+                onClick={toggleFullscreen}
+                className={`flex items-center gap-1.5 px-3 py-1.5 font-bold text-[10px] uppercase rounded-md transition-all cursor-pointer border ${
+                  isFullscreen
+                    ? 'bg-rose-600 hover:bg-rose-700 text-white border-rose-500 shadow-sm'
+                    : 'bg-indigo-600 hover:bg-indigo-700 text-white border-indigo-600 shadow-xs'
+                }`}
+                title={isFullscreen ? "Sair da Tela Cheia (ESC)" : "Abrir Mapa em Tela Cheia"}
+              >
+                {isFullscreen ? (
+                  <>
+                    <Minimize2 className="w-3.5 h-3.5" />
+                    <span>Sair da Tela Cheia</span>
+                  </>
+                ) : (
+                  <>
+                    <Maximize2 className="w-3.5 h-3.5" />
+                    <span>Tela Cheia</span>
+                  </>
+                )}
+              </button>
             </div>
           </div>
 
-          <div className="relative h-[360px] w-full bg-slate-50">
+          <div className={`relative w-full bg-slate-50 ${isFullscreen ? 'flex-1 h-full' : 'h-[360px]'}`}>
             <div ref={mapContainerRef} className="w-full h-full" id="plots-unified-property-map" />
             
+            {/* Floating Variables & Layer Toolbar on Map */}
+            <div className={`absolute top-3 left-3 z-[1000] flex flex-wrap items-center gap-1.5 max-w-[calc(100%-150px)] ${
+              isFullscreen 
+                ? 'bg-slate-900/90 text-white border-slate-700/80 p-2 rounded-xl shadow-2xl backdrop-blur-md' 
+                : 'bg-white/95 text-slate-800 border-slate-200/90 p-1.5 rounded-xl shadow-md backdrop-blur-xs'
+            } border transition-all`}>
+              
+              {/* Soil Layer Depth buttons */}
+              <div className="flex items-center bg-slate-100 dark:bg-slate-800 p-0.5 rounded-lg border border-slate-200/60 dark:border-slate-700/60">
+                {soilLayers.map(l => (
+                  <button
+                    key={l}
+                    type="button"
+                    onClick={() => setActiveLayer(l)}
+                    className={`px-2 py-0.5 text-[9px] font-extrabold rounded transition-all cursor-pointer select-none ${
+                      activeLayer === l
+                        ? 'bg-emerald-500 text-slate-950 shadow-xs'
+                        : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white'
+                    }`}
+                  >
+                    {l}
+                  </button>
+                ))}
+              </div>
+
+              <div className="h-4 w-px bg-slate-250 dark:bg-slate-700 mx-0.5 hidden sm:block" />
+
+              <span className="text-[9px] font-black uppercase text-slate-400 dark:text-slate-400 hidden sm:inline">
+                Variável:
+              </span>
+
+              {/* Quick Pills for requested variables */}
+              <div className="flex items-center gap-1 overflow-x-auto scrollbar-none py-0.5 max-w-full">
+                {[
+                  { id: 'v_percent', label: 'V%' },
+                  { id: 's', label: 'Enxofre (S)' },
+                  { id: 'p_meh', label: 'P (Meh)' },
+                  { id: 'k_t', label: 'K/CTC %' },
+                  { id: 'ph_cacl2', label: 'pH' },
+                  { id: 'mo', label: 'M.O.' },
+                  { id: 'k', label: 'K⁺' },
+                  { id: 'ca', label: 'Ca²⁺' },
+                  { id: 'mg', label: 'Mg²⁺' },
+                  { id: 'argila', label: 'Argila' },
+                ].map(item => {
+                  const isSelected = mapVariable === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => setMapVariable(item.id as keyof SoilLabResults)}
+                      className={`px-2 py-0.5 text-[10px] font-extrabold rounded-md whitespace-nowrap transition-all cursor-pointer ${
+                        isSelected
+                          ? 'bg-indigo-600 text-white shadow-xs font-black ring-1 ring-indigo-400'
+                          : isFullscreen
+                            ? 'bg-slate-800 hover:bg-slate-700 text-slate-300'
+                            : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                      }`}
+                    >
+                      {item.label}
+                    </button>
+                  );
+                })}
+
+                {/* Dropdown for remaining parameters */}
+                <select
+                  value={mapVariable}
+                  onChange={(e) => setMapVariable(e.target.value as keyof SoilLabResults)}
+                  className={`text-[10px] font-extrabold border rounded-md px-1.5 py-0.5 cursor-pointer focus:outline-hidden ${
+                    isFullscreen
+                      ? 'bg-slate-800 text-emerald-400 border-slate-700'
+                      : 'bg-slate-100 text-slate-700 border-slate-200'
+                  }`}
+                >
+                  <option value="v_percent">V% (Saturação Bases)</option>
+                  <option value="s">Enxofre (S)</option>
+                  <option value="p_meh">Fósforo (P Mehlich)</option>
+                  <option value="p_res">Fósforo (P Resina)</option>
+                  <option value="k_t">Relação K/CTC % (K/T)</option>
+                  <option value="pH">pH (H₂O)</option>
+                  <option value="ph_cacl2">pH (CaCl₂)</option>
+                  <option value="mo">M.O. (Matéria Orgânica)</option>
+                  <option value="k">Potássio (K⁺)</option>
+                  <option value="ca">Cálcio (Ca²⁺)</option>
+                  <option value="mg">Magnésio (Mg²⁺)</option>
+                  <option value="al">Alumínio (Al³⁺)</option>
+                  <option value="ctc_t">CTC (T)</option>
+                  <option value="sb">Soma de Bases (SB)</option>
+                  <option value="argila">Teor de Argila (%)</option>
+                  <option value="silte">Silte (%)</option>
+                  <option value="areia_total">Areia Total (%)</option>
+                  <option value="b">Boro (B)</option>
+                  <option value="cu">Cobre (Cu)</option>
+                  <option value="fe">Ferro (Fe)</option>
+                  <option value="mn">Manganês (Mn)</option>
+                  <option value="zn">Zinco (Zn)</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Floating button on top right of map */}
+            <div className="absolute top-3 right-3 z-[1000] flex items-center gap-2">
+              <button
+                type="button"
+                onClick={toggleFullscreen}
+                className="bg-white/95 hover:bg-white text-slate-800 font-bold text-[10px] uppercase px-2.5 py-1.5 rounded-lg border border-slate-300 shadow-md backdrop-blur-xs flex items-center gap-1.5 transition-all cursor-pointer hover:scale-105 active:scale-95"
+                title={isFullscreen ? "Sair da Tela Cheia (ESC)" : "Abrir Mapa em Tela Cheia"}
+              >
+                {isFullscreen ? (
+                  <>
+                    <Minimize2 className="w-3.5 h-3.5 text-rose-600" />
+                    <span className="font-semibold text-rose-700">Sair da Tela Cheia</span>
+                  </>
+                ) : (
+                  <>
+                    <Maximize2 className="w-3.5 h-3.5 text-indigo-600" />
+                    <span className="font-semibold text-indigo-900">Tela Cheia</span>
+                  </>
+                )}
+              </button>
+            </div>
+
             {/* Color mapping legend overlay */}
             <div className="absolute bottom-3 left-3 bg-white/95 rounded-lg border border-slate-200 p-2.5 z-1000 shadow-sm max-w-[170px] space-y-1.5 text-[10px]">
               <span className="font-extrabold text-slate-800 block text-[9px] uppercase tracking-wide">
